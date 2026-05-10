@@ -46,16 +46,16 @@ typedef struct {
 #define IS_ALIGNED(x, a) (((x) & ((a) - 1)) == 0)
 
 /* Pointer arithmetic */
-#define PTR_ALIGN(p, a) ((typeof(p))ALIGN((unsigned long)(p), (a)))
+#define PTR_ALIGN(p, a) ((__typeof__(p))ALIGN((unsigned long)(p), (a)))
 
 /* Bit operations */
 #define BIT(n) (1UL << (n))
-#define GENMASK(h, l) (((~0UL) << (l)) & (~0UL >> (63 - (h))))
+#define GENMASK(h, l) (((~0UL) << (l)) & (~0UL >> (64 - 1 - (h))))
 
 /* Container of */
 #define container_of(ptr, type, member)                                        \
-  ({                                                                           \
-    const typeof(((type *)0)->member) *__mptr = (ptr);                         \
+  __extension__({                                                              \
+    const __typeof__(((type *)0)->member) *__mptr = (ptr);                     \
     (type *)((char *)__mptr - offsetof(type, member));                         \
   })
 
@@ -137,5 +137,19 @@ typedef struct {
 #ifndef NULL
 #define NULL ((void *)0)
 #endif
+
+/* IPC message types */
+#define IPC_TYPE_RAW 0
+#define IPC_TYPE_INPUT 1
+#define IPC_TYPE_NOTIFY 0x100
+
+/* IPC message structure */
+struct ipc_message {
+  int from;
+  int type;
+  uint64_t data1;
+  uint64_t data2;
+  char payload[64];
+};
 
 #endif /* _KERNEL_TYPES_H */
