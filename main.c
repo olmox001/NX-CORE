@@ -92,25 +92,40 @@ static void kernel_stage_k2_k3(void);
 #if HAL_BOOT_ABI_FDT
 static void validate_uefi_boot_info(const struct nxhal_boot_info *info) {
   uint64_t bytes;
+  uint32_t required = NXHAL_BOOT_FLAG_FDT_SIZE_VALID |
+                      NXHAL_BOOT_FLAG_UEFI_MAP_VALID;
 
-  if (info->firmware_map_phys == 0U || info->firmware_map_record_count == 0U ||
+  if (info->source != NXHAL_BOOT_SOURCE_AARCH64_EFI ||
+      (info->flags & required) != required ||
+      (info->flags & ~(required | NXHAL_BOOT_FLAG_MODULE_VALID)) != 0U ||
+      info->firmware_map_phys == 0U || info->firmware_map_record_count == 0U ||
       info->firmware_map_record_size != NXHAL_UEFI_MEMORY_RECORD_SIZE ||
       info->ebs_attempts == 0U ||
       info->ebs_attempts > NXHAL_UEFI_EXIT_MAX_ATTEMPTS ||
       info->map_growths > NXHAL_UEFI_MAP_MAX_GROWTHS || info->reserved0 != 0U)
-    panic("BootInfo: malformed UEFI memory-map handoff");
+    panic("BootInfo: malformed UEFI handoff");
   if (info->firmware_map_phys >= HAL_PHYS_MAP_LIMIT)
     panic("BootInfo: UEFI map base outside physical map");
   bytes = (uint64_t)info->firmware_map_record_count *
           (uint64_t)info->firmware_map_record_size;
   if (bytes > HAL_PHYS_MAP_LIMIT - info->firmware_map_phys)
     panic("BootInfo: UEFI map span outside physical map");
+  if ((info->flags & NXHAL_BOOT_FLAG_MODULE_VALID) != 0U) {
+    if (info->boot_module_phys == 0U || info->boot_module_size == 0U ||
+        info->boot_module_phys >= HAL_PHYS_MAP_LIMIT ||
+        info->boot_module_size > HAL_PHYS_MAP_LIMIT - info->boot_module_phys)
+      panic("BootInfo: invalid UEFI rootfs module");
+  } else if (info->boot_module_phys != 0U || info->boot_module_size != 0U) {
+    panic("BootInfo: unflagged UEFI rootfs module");
+  }
 }
 
 static void validate_legacy_boot_info(const struct nxhal_boot_info *info) {
-  if (info->firmware_map_phys != 0U || info->firmware_map_record_count != 0U ||
+  if (info->source != NXHAL_BOOT_SOURCE_UNKNOWN || info->flags != 0U ||
+      info->firmware_map_phys != 0U || info->firmware_map_record_count != 0U ||
       info->firmware_map_record_size != 0U || info->ebs_attempts != 0U ||
-      info->map_growths != 0U || info->reserved0 != 0U)
+      info->map_growths != 0U || info->boot_module_phys != 0U ||
+      info->boot_module_size != 0U || info->reserved0 != 0U)
     panic("BootInfo: legacy handoff carried firmware-only fields");
 }
 
@@ -120,7 +135,6 @@ static void validate_nxhal_boot_info(uint64_t boot_arg0, uint64_t boot_arg1) {
   if (info->magic != NXHAL_BOOT_INFO_MAGIC ||
       info->version != NXHAL_BOOT_INFO_VERSION ||
       info->size != NXHAL_BOOT_INFO_SIZE ||
-      info->source != NXHAL_BOOT_SOURCE_UNKNOWN || info->flags != 0U ||
       info->fdt_phys != boot_arg0 || info->fdt_size != boot_arg1)
     panic("BootInfo: invalid AArch64 NX-HAL handoff record");
   if (boot_arg1 != 0U)
@@ -148,9 +162,11 @@ static void init_fdt_boot_handoff(uint64_t boot_arg0, uint64_t boot_arg1) {
 
   nxhal_boot_info.fdt_phys = boot_fdt_ptr;
   nxhal_boot_info.fdt_size = boot_fdt_size;
-  if (boot_arg1 != 0U)
-    nxhal_boot_info.flags =
-        NXHAL_BOOT_FLAG_FDT_SIZE_VALID | NXHAL_BOOT_FLAG_UEFI_MAP_VALID;
+  if (boot_arg1 != 0U) {
+    uint32_t module_flag = nxhal_boot_info.flags & NXHAL_BOOT_FLAG_MODULE_VALID;
+    nxhal_boot_info.flags = NXHAL_BOOT_FLAG_FDT_SIZE_VALID |
+                            NXHAL_BOOT_FLAG_UEFI_MAP_VALID | module_flag;
+  }
   else if (boot_arg0 != 0U)
     nxhal_boot_info.flags = NXHAL_BOOT_FLAG_LEGACY_TRUSTED_INPUT;
   else

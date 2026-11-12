@@ -22,6 +22,9 @@ EFI_IMAGE="$EFI_ROOT/efi.img"
 EFI_LOADER="$EFI_ROOT/EFI/BOOT/BOOTX64.EFI"
 ISO="$EFI_ROOT/nexsos-amd64-uefi.iso"
 KERNEL="$BUILD/kernel.elf"
+CATALOG="$ROOT/config/user-projects.conf"
+CATALOG_TOOL="$ROOT/tools/user-project-catalog.py"
+USER_IMAGES="${NEXS_USER_IMAGE_DIR:-$BUILD/user-images}"
 GRUB_COMMIT="$NEXS_GRUB_COMMIT"
 
 for tool in xorriso mformat mmd mcopy python3; do
@@ -46,7 +49,7 @@ case "$ISO_STAGE" in
     *) echo "[amd64-uefi] unsafe staging path: $ISO_STAGE" >&2; exit 1 ;;
 esac
 rm -rf "$ISO_STAGE"
-mkdir -p "$ISO_STAGE/boot/grub" "$(dirname "$EFI_LOADER")" "$LOG_DIR"
+mkdir -p "$ISO_STAGE/boot/grub" "$ISO_STAGE/boot/user-images" "$(dirname "$EFI_LOADER")" "$LOG_DIR"
 
 cat > "$EFI_ROOT/embedded.cfg" <<'GRUB_EMBEDDED'
 search --no-floppy --file --set=root /boot/grub/grub.cfg
@@ -71,18 +74,27 @@ mcopy -i "$EFI_IMAGE" "$EFI_LOADER" ::/EFI/BOOT/BOOTX64.EFI
 
 cp "$EFI_IMAGE" "$ISO_STAGE/boot/grub/efi.img"
 cp "$KERNEL" "$ISO_STAGE/boot/kernel.elf"
-cat > "$ISO_STAGE/boot/grub/grub.cfg" <<'GRUB_CONFIG'
-set timeout=0
-set default=0
+while IFS='|' read -r project_id title image marker; do
+    [[ -n "$project_id" && -n "$title" && -n "$image" ]] || {
+        echo "[amd64-uefi] malformed validated catalog row" >&2
+        exit 1
+    }
+    [[ -s "$USER_IMAGES/$image" ]] || {
+        echo "[amd64-uefi] missing project image: $USER_IMAGES/$image" >&2
+        exit 1
+    }
+    cp "$USER_IMAGES/$image" "$ISO_STAGE/boot/user-images/$image"
+done < <(python3 "$CATALOG_TOOL" --catalog "$CATALOG" list)
+cat > "$ISO_STAGE/boot/grub/grub.cfg" <<'GRUB_HEADER'
+set timeout=5
 insmod serial
 insmod multiboot2
 serial --unit=0 --speed=115200 --word=8 --parity=no --stop=1
-terminal_input serial
-terminal_output serial
-echo "NEXSOS_GRUB_AMD64_UEFI_MULTIBOOT2"
-multiboot2 /boot/kernel.elf
-boot
-GRUB_CONFIG
+terminal_input console serial
+terminal_output console serial
+echo "NEXSOS_GRUB_AMD64_UEFI_PROJECT_CATALOG"
+GRUB_HEADER
+python3 "$CATALOG_TOOL" --catalog "$CATALOG" grub-amd64     --kernel /boot/kernel.elf --image-dir /boot/user-images     >> "$ISO_STAGE/boot/grub/grub.cfg"
 
 xorriso -as mkisofs -R -J -V NEXSX64     -o "$ISO" -e boot/grub/efi.img -no-emul-boot "$ISO_STAGE"     > "$LOG_DIR/xorriso-amd64-uefi.log" 2>&1
 xorriso -indev "$ISO" -report_el_torito plain     > "$LOG_DIR/amd64-uefi-el-torito.txt" 2>&1

@@ -88,11 +88,21 @@ _start:
     mov x22, x2
     mov x23, x3
     mov x24, x4
+    mov x25, x5
+    mov x26, x6
     adrp x5, nxhal_boot_info
     add x5, x5, :lo12:nxhal_boot_info
     str x20, [x5, #NXHAL_BOOT_INFO_FDT_PHYS_OFFSET]
     str x21, [x5, #NXHAL_BOOT_INFO_FDT_SIZE_OFFSET]
     cbz x21, .Lboot_handoff_saved
+    mov w6, #NXHAL_BOOT_SOURCE_AARCH64_EFI
+    str w6, [x5, #NXHAL_BOOT_INFO_SOURCE_OFFSET]
+    mov w6, #(NXHAL_BOOT_FLAG_FDT_SIZE_VALID | NXHAL_BOOT_FLAG_UEFI_MAP_VALID)
+    cbz x25, .Lboot_flags_ready
+    cbz x26, .Lboot_flags_ready
+    orr w6, w6, #NXHAL_BOOT_FLAG_MODULE_VALID
+.Lboot_flags_ready:
+    str w6, [x5, #NXHAL_BOOT_INFO_FLAGS_OFFSET]
     str x22, [x5, #NXHAL_BOOT_INFO_FW_MAP_PHYS_OFFSET]
     str w23, [x5, #NXHAL_BOOT_INFO_FW_MAP_COUNT_OFFSET]
     mov w6, #NXHAL_UEFI_MEMORY_RECORD_SIZE
@@ -100,6 +110,8 @@ _start:
     str w24, [x5, #NXHAL_BOOT_INFO_EBS_ATTEMPTS_OFFSET]
     lsr x6, x24, #32
     str w6, [x5, #NXHAL_BOOT_INFO_MAP_GROWTHS_OFFSET]
+    str x25, [x5, #NXHAL_BOOT_INFO_MODULE_PHYS_OFFSET]
+    str x26, [x5, #NXHAL_BOOT_INFO_MODULE_SIZE_OFFSET]
 .Lboot_handoff_saved:
 
     /* Disable interrupts */
@@ -409,6 +421,8 @@ nxhal_boot_info:
     .long 0                              /* firmware_map_record_size */
     .long 0                              /* ebs_attempts */
     .long 0                              /* map_growths */
+    .quad 0                              /* boot_module_phys */
+    .quad 0                              /* boot_module_size */
     .quad 0                              /* reserved0 */
 
 cpu_spin_table:

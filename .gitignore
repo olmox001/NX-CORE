@@ -13,3 +13,5 @@ HAL/build/
 HAL/tests/build/
 HAL/references/
 /.nxsdk/
+*.DS_Store
+*.pyc

@@ -6,6 +6,7 @@
 #define NEXS_KERNEL_TEXT_OFFSET  0x00080000ULL
 #define NEXS_KERNEL_MAX_SIZE     (128ULL * 1024ULL * 1024ULL)
 #define NEXS_DTB_MAX_SIZE        (16ULL * 1024ULL * 1024ULL)
+#define NEXS_ROOTFS_MAX_SIZE     (2ULL * 1024ULL * 1024ULL * 1024ULL)
 #define NEXS_PHYSICAL_MAP_LIMIT  0x0000002000000000ULL /* exclusive: 128 GiB */
 #define NEXS_FDT_MAGIC           0xD00DFEEDU
 #define NEXS_ARM64_IMAGE_MAGIC   0x644D5241U
@@ -18,10 +19,13 @@ extern const UINT8 nexs_embedded_kernel_start[];
 extern const UINT8 nexs_embedded_kernel_end[];
 extern const UINT8 nexs_embedded_dtb_start[];
 extern const UINT8 nexs_embedded_dtb_end[];
+extern const UINT8 nexs_embedded_rootfs_start[];
+extern const UINT8 nexs_embedded_rootfs_end[];
 extern void nexs_efi_handoff(UINT64 KernelPA, UINT64 DtbPA,
                              UINT64 KernelSpan, UINT64 DtbSpan,
                              UINT64 FirmwareMapPA, UINT64 FirmwareRecordCount,
-                             UINT64 EbsEvidence)
+                             UINT64 EbsEvidence, UINT64 RootfsPA,
+                             UINT64 RootfsSpan)
     __attribute__((noreturn));
 extern void nexs_efi_post_exit_halt(void) __attribute__((noreturn));
 
@@ -32,6 +36,7 @@ static CHAR16 msg_start[] = {'N','E','X','S','O','S','_','E','F','I','_','S','T'
 static CHAR16 msg_kernel[] = {'N','E','X','S','O','S','_','K','E','R','N','E','L','_','I','M','A','G','E','_','L','O','A','D','E','D','\r','\n',0};
 static CHAR16 msg_dtb_embedded[] = {'N','E','X','S','O','S','_','D','T','B','_','E','M','B','E','D','D','E','D','\r','\n',0};
 static CHAR16 msg_dtb_firmware[] = {'N','E','X','S','O','S','_','D','T','B','_','F','I','R','M','W','A','R','E','_','T','A','B','L','E','\r','\n',0};
+static CHAR16 msg_rootfs[] = {'N','E','X','S','O','S','_','R','O','O','T','F','S','_','L','O','A','D','E','D','\r','\n',0};
 static CHAR16 msg_exit[] = {'N','E','X','S','O','S','_','E','X','I','T','_','B','O','O','T','_','S','E','R','V','I','C','E','S','\r','\n',0};
 static CHAR16 msg_error[] = {'N','E','X','S','O','S','_','E','F','I','_','S','T','U','B','_','E','R','R','O','R','\r','\n',0};
 
@@ -197,6 +202,30 @@ static EFI_STATUS load_embedded_dtb(UINT64 *DtbPA, UINT64 *DtbSpan)
     return EFI_SUCCESS;
 }
 
+static EFI_STATUS load_rootfs(UINT64 *RootfsPA, UINT64 *RootfsSpan)
+{
+    const UINT8 *Image = nexs_embedded_rootfs_start;
+    UINT64 FileSize = (UINT64)(nexs_embedded_rootfs_end -
+                               nexs_embedded_rootfs_start);
+    UINT64 Address = NEXS_PHYSICAL_MAP_LIMIT - 1ULL;
+    UINTN Pages;
+    EFI_STATUS Status;
+
+    if (RootfsPA == 0 || RootfsSpan == 0 || FileSize == 0ULL ||
+        FileSize > NEXS_ROOTFS_MAX_SIZE)
+        return EFI_LOAD_ERROR;
+    Pages = (UINTN)((FileSize + EFI_PAGE_SIZE - 1ULL) / EFI_PAGE_SIZE);
+    Status = gBootServices->AllocatePages(EFI_ALLOCATE_MAX_ADDRESS,
+                                          EFI_LOADER_DATA, Pages, &Address);
+    if (EFI_ERROR(Status) || Address >= NEXS_PHYSICAL_MAP_LIMIT ||
+        FileSize > NEXS_PHYSICAL_MAP_LIMIT - Address)
+        return EFI_OUT_OF_RESOURCES;
+    copy_bytes((UINT8 *)(UINTN)Address, Image, (UINTN)FileSize);
+    *RootfsPA = Address;
+    *RootfsSpan = FileSize;
+    return EFI_SUCCESS;
+}
+
 static EFI_STATUS load_dtb(EFI_SYSTEM_TABLE *SystemTable,
                            UINT64 *DtbPA, UINT64 *DtbSpan)
 {
@@ -222,6 +251,7 @@ EFI_STATUS efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable)
     EFI_STATUS Status;
     UINT64 KernelPA = 0, KernelSpan = 0;
     UINT64 DtbPA = 0, DtbSpan = 0;
+    UINT64 RootfsPA = 0, RootfsSpan = 0;
     UINT64 EbsEvidence;
 
     gSystemTable = SystemTable;
@@ -244,6 +274,12 @@ EFI_STATUS efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable)
         console(msg_error);
         return Status;
     }
+    Status = load_rootfs(&RootfsPA, &RootfsSpan);
+    if (EFI_ERROR(Status)) {
+        console(msg_error);
+        return Status;
+    }
+    console(msg_rootfs);
 
     console(msg_exit);
     ExitResult = nexs_efi_exit_and_normalize(
@@ -259,5 +295,6 @@ EFI_STATUS efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable)
                   ((UINT64)MemoryHandoff.buffer_growths << 32);
     nexs_efi_handoff(KernelPA, DtbPA, KernelSpan, DtbSpan,
                      MemoryHandoff.record_base,
-                     (UINT64)MemoryHandoff.record_count, EbsEvidence);
+                     (UINT64)MemoryHandoff.record_count, EbsEvidence,
+                     RootfsPA, RootfsSpan);
 }

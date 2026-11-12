@@ -21,6 +21,7 @@
  *   Drivers that call hal_read32 in interrupt handlers should be aware of
  *   the overhead (see HAL-01 in docs/review/analysis/02-boot-arch-hal.md).
  */
+#include <hal/boot_info.h>
 #include <hal/diagnostic_protocol.h>
 #include <hal/device_name.h>
 #include <hal/device_protocol.h>
@@ -67,14 +68,22 @@ static void ecam_write32(uint8_t bus, uint8_t dev, uint8_t fn,
 }
 static const struct nxhal_pci_config_ops ecam_ops = { ecam_read32, ecam_write32 };
 
-/* arch_platform_get_boot_module (HAL contract, platform.h): aarch64 boots a
- * raw kernel + a virtio-blk disk, with no GRUB/initrd module today.  Returns
- * 0; a future DTB /chosen initrd would slot in here, keeping the ramdisk
- * block backend identical to amd64. */
+/* AArch64 UEFI publishes the selected user-project rootfs through the typed
+ * NX-HAL boot-info record. The generic RAM block provider consumes exactly
+ * the same arch_platform_get_boot_module contract as amd64 GRUB modules. */
 int arch_platform_get_boot_module(uint64_t *base, uint64_t *size) {
-  (void)base;
-  (void)size;
-  return 0;
+  const struct nxhal_boot_info *info = &nxhal_boot_info;
+
+  if (base == NULL || size == NULL ||
+      info->source != NXHAL_BOOT_SOURCE_AARCH64_EFI ||
+      (info->flags & (uint32_t)NXHAL_BOOT_FLAG_MODULE_VALID) == 0U ||
+      info->boot_module_size == 0U ||
+      info->boot_module_phys >= HAL_PHYS_MAP_LIMIT ||
+      info->boot_module_size > HAL_PHYS_MAP_LIMIT - info->boot_module_phys)
+    return 0;
+  *base = info->boot_module_phys;
+  *size = info->boot_module_size;
+  return 1;
 }
 
 /*

@@ -11,6 +11,7 @@ ifneq ($(filter $(MDEBUG),0 1),$(MDEBUG))
   $(error MDEBUG must be 0 or 1)
 endif
 HOST_OS ?= $(shell uname -s)
+HOST_CC ?= cc
 ifeq ($(HOST_OS),Darwin)
   AMD64_CROSS_COMPILE ?= x86_64-elf-
   AARCH64_CROSS_COMPILE ?= aarch64-none-elf-
@@ -76,7 +77,7 @@ ifeq ($(NX_CONVERSION_AS_ERROR),1)
 COMMON_FLAGS += -Werror=conversion -Werror=sign-conversion
 endif
 KERNEL_INCLUDE := -I$(HAL_ROOT) -I$(KERNEL_DIR)/include -I$(HAL_ROOT)/include -I$(HAL_ARCH_DIR)/include \
-  -I$(KERNEL_DIR)/include/abi -I$(KERNEL_DIR)/include/api
+  -I$(KERNEL_DIR)/include/abi -I$(KERNEL_DIR)/include/api -I$(BUILD_DIR)/generated
 KERNEL_HARDEN_FLAGS := -Wundef -Wformat=2 -Wcast-align -Wpointer-arith \
   -Wswitch-enum -Wdouble-promotion -Wvla -Wmissing-declarations
 KERNEL_CFLAGS := $(COMMON_FLAGS) $(ARCH_CFLAGS) $(KERNEL_INCLUDE) \
@@ -93,6 +94,18 @@ $(MDEBUG_CONFIG): mdebug-config-force
 	  if test -r "$@" && cmp -s "$@.tmp" "$@"; then rm "$@.tmp"; \
 	  else mv "$@.tmp" "$@"; fi
 $(BUILD_DIR)/main.o $(BUILD_DIR)/core/fault.o: $(MDEBUG_CONFIG)
+
+
+BOOT_ENTRY_CONFIG := $(KERNEL_DIR)/config/boot-entry.conf
+BOOT_PROJECT_CATALOG := $(KERNEL_DIR)/config/user-projects.conf
+BOOT_ENTRY_HEADER := $(BUILD_DIR)/generated/boot_entry.h
+$(BOOT_ENTRY_HEADER): $(BOOT_ENTRY_CONFIG) $(BOOT_PROJECT_CATALOG) $(KERNEL_DIR)/tools/user-project-catalog.py
+	@mkdir -p $(dir $@)
+	@python3 $(KERNEL_DIR)/tools/user-project-catalog.py --catalog $(BOOT_PROJECT_CATALOG) \
+	  boot-header --entry $(BOOT_ENTRY_CONFIG) > "$@.tmp"
+	@mv "$@.tmp" "$@"
+
+$(BUILD_DIR)/$(KERNEL_DIR)/fs/object_boot_provider.o: $(BOOT_ENTRY_HEADER)
 
 KERNEL_ELF := $(BUILD_DIR)/kernel.elf
 KERNEL_BIN := $(BUILD_DIR)/kernel.bin
@@ -115,7 +128,7 @@ require-sdk:
 print-sdk-root:
 	@tools/resolve-sdk.sh --print
 
-check: require-sdk check-contracts check-sdk-boundary
+check: require-sdk check-contracts check-sdk-boundary check-object-boot-provider
 	@set -eu; for tool in "$(CC)" "$(LD)" "$(OBJCOPY)" "$(CROSS_COMPILE)nm"; do \
 	  command -v "$$tool" >/dev/null || { echo "missing tool: $$tool" >&2; exit 1; }; done
 	@case "$(ARCH):$$($(CC) -dumpmachine)" in \
@@ -133,6 +146,18 @@ setup-deps:
 
 check-contracts:
 	@tools/check-contract-snapshot.sh
+	@mkdir -p "$(BUILD_DIR)/host-tests"
+	@$(HOST_CC) -std=c11 -Wall -Wextra -Werror -I$(HAL_ROOT)/include \
+	  tools/check-boot-info-layout.c -o "$(BUILD_DIR)/host-tests/check-boot-info-layout"
+	@"$(BUILD_DIR)/host-tests/check-boot-info-layout"
+
+check-object-boot-provider: $(BOOT_ENTRY_HEADER)
+	@mkdir -p "$(BUILD_DIR)/host-tests"
+	@$(HOST_CC) -std=c11 -Wall -Wextra -Werror -include test/host_kernel_compat.h \
+	  -I$(BUILD_DIR)/generated -I$(KERNEL_DIR)/include -I$(KERNEL_DIR)/include/abi -I$(KERNEL_DIR)/include/api \
+	  fs/object_boot_provider.c test/object_boot_provider_test.c \
+	  -o "$(BUILD_DIR)/host-tests/object_boot_provider_test"
+	@"$(BUILD_DIR)/host-tests/object_boot_provider_test"
 
 check-sdk-boundary:
 	@set -eu; \
@@ -259,9 +284,12 @@ else
 endif
 MACHINE_EXT_OBJ := $(BUILD_DIR)/user/extension/nxmanageDD/main.o
 MACHINE_EXT_ELF := $(BUILD_DIR)/nxmanageDD.elf
+NXSDK_ROOT_FOR_EXT := $(NXSDK_ROOT)
+-include $(NXSDK_ROOT)/config/extension-paths.mk
+-include $(NXSDK_ROOT)/config/userkit-paths.mk
 MACHINE_EXT_CFLAGS := $(COMMON_FLAGS) $(ARCH_CFLAGS) \
   -I$(NXSDK_ROOT)/include/contract -I$(NXSDK_ROOT)/include/api \
-  -ffunction-sections -fdata-sections
+  $(NXSDK_EXTENSION_INCLUDE_FLAGS) $(NXSDK_USERKIT_INCLUDE_FLAGS) -ffunction-sections -fdata-sections
 
 .PHONY: machine-sdk machine-extension
 machine-sdk: require-sdk

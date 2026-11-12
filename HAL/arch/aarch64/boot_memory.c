@@ -21,6 +21,15 @@ static int nxhal_boot_fdt_handoff_valid(void) {
   return nxhal_boot_span_valid(info->fdt_phys, info->fdt_size);
 }
 
+static int nxhal_boot_module_handoff_valid(void) {
+  const struct nxhal_boot_info *info = &nxhal_boot_info;
+
+  if ((info->flags & (uint32_t)NXHAL_BOOT_FLAG_MODULE_VALID) == 0U ||
+      info->source != NXHAL_BOOT_SOURCE_AARCH64_EFI)
+    return 0;
+  return nxhal_boot_span_valid(info->boot_module_phys, info->boot_module_size);
+}
+
 static int nxhal_boot_memory_handoff_valid(void) {
   uint64_t bytes;
   const struct nxhal_boot_info *info = &nxhal_boot_info;
@@ -77,6 +86,8 @@ uint32_t nxhal_boot_live_span_count(void) {
 
   if (nxhal_boot_memory_handoff_valid())
     ++count;
+  if (nxhal_boot_module_handoff_valid())
+    ++count;
   return count;
 }
 
@@ -95,12 +106,21 @@ enum nxhal_boot_memory_status nxhal_boot_live_span_get(
     }
     --index;
   }
-  if (!nxhal_boot_memory_handoff_valid() || index != 0U)
+  if (nxhal_boot_memory_handoff_valid()) {
+    if (index == 0U) {
+      bytes = (uint64_t)nxhal_boot_info.firmware_map_record_count *
+              (uint64_t)nxhal_boot_info.firmware_map_record_size;
+      *out = (struct nxhal_boot_live_span){
+          nxhal_boot_info.firmware_map_phys, bytes,
+          NXHAL_BOOT_LIVE_FIRMWARE_MAP, 0U};
+      return NXHAL_BOOT_MEMORY_OK;
+    }
+    --index;
+  }
+  if (!nxhal_boot_module_handoff_valid() || index != 0U)
     return NXHAL_BOOT_MEMORY_E_RANGE;
-  bytes = (uint64_t)nxhal_boot_info.firmware_map_record_count *
-          (uint64_t)nxhal_boot_info.firmware_map_record_size;
   *out = (struct nxhal_boot_live_span){
-      nxhal_boot_info.firmware_map_phys, bytes,
-      NXHAL_BOOT_LIVE_FIRMWARE_MAP, 0U};
+      nxhal_boot_info.boot_module_phys, nxhal_boot_info.boot_module_size,
+      NXHAL_BOOT_LIVE_MODULE, 0U};
   return NXHAL_BOOT_MEMORY_OK;
 }

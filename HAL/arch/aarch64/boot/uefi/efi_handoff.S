@@ -4,7 +4,8 @@
 
 /*
  * void nexs_efi_handoff(kernel_image_pa, dtb_pa, kernel_span, dtb_span,
- *                        firmware_map_pa, firmware_record_count, ebs_evidence)
+ *                        firmware_map_pa, firmware_record_count, ebs_evidence,
+ *                        rootfs_pa, rootfs_span)
  *
  * Called only after ExitBootServices(). Clean loaded/handoff ranges to PoC,
  * invalidate the instruction cache, disable the active EL's MMU/caches,
@@ -19,6 +20,8 @@ nexs_efi_handoff:
     mov     x23, x4                  /* normalized firmware map base */
     mov     x24, x5                  /* normalized firmware record count */
     mov     x25, x6                  /* low32 attempts, high32 growths */
+    mov     x27, x7                  /* selected rootfs physical base */
+    ldr     x28, [sp]                /* ninth AAPCS64 argument: rootfs span */
     mov     x26, #40
     mul     x26, x24, x26            /* normalized map byte span */
     msr     daifset, #0xf
@@ -53,15 +56,27 @@ nexs_efi_handoff:
 
     /* Clean normalized UEFI memory-map records written after EBS. */
 .Lclean_map_start:
-    cbz     x23, .Lcache_sync
+    cbz     x23, .Lclean_rootfs_start
     bic     x13, x23, x12
     add     x14, x23, x26
 .Lclean_map:
     cmp     x13, x14
-    b.hs    .Lcache_sync
+    b.hs    .Lclean_rootfs_start
     dc      cvac, x13
     add     x13, x13, x11
     b       .Lclean_map
+
+    /* Clean the selected rootfs module copied by the EFI loader. */
+.Lclean_rootfs_start:
+    cbz     x27, .Lcache_sync
+    bic     x13, x27, x12
+    add     x14, x27, x28
+.Lclean_rootfs:
+    cmp     x13, x14
+    b.hs    .Lcache_sync
+    dc      cvac, x13
+    add     x13, x13, x11
+    b       .Lclean_rootfs
 
 .Lcache_sync:
     dsb     sy
@@ -113,6 +128,8 @@ nexs_efi_handoff:
     mov     x2, x23                  /* normalized UEFI memory map */
     mov     x3, x24                  /* normalized memory record count */
     mov     x4, x25                  /* EBS attempt/growth evidence */
+    mov     x5, x27                  /* selected rootfs physical base */
+    mov     x6, x28                  /* selected rootfs byte span */
     br      x19                      /* execute Image header at load PA */
 
 .global nexs_efi_post_exit_halt

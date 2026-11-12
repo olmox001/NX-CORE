@@ -4,6 +4,9 @@
 #ifndef NEXS_EFI_DTB_IMAGE
 #error "NEXS_EFI_DTB_IMAGE is required"
 #endif
+#ifndef NEXS_EFI_ROOTFS_IMAGE
+#error "NEXS_EFI_ROOTFS_IMAGE is required"
+#endif
 
 .section .rdata,"dr"
 .p2align 4
@@ -19,3 +22,10 @@ nexs_embedded_dtb_start:
 .incbin NEXS_EFI_DTB_IMAGE
 .globl nexs_embedded_dtb_end
 nexs_embedded_dtb_end:
+
+.p2align 4
+.globl nexs_embedded_rootfs_start
+nexs_embedded_rootfs_start:
+.incbin NEXS_EFI_ROOTFS_IMAGE
+.globl nexs_embedded_rootfs_end
+nexs_embedded_rootfs_end:

@@ -33,7 +33,7 @@ int arch_platform_probe_read32(uint64_t physical, uint32_t *value);
 
 /* arch_platform_get_boot_module - report a firmware-loaded boot module (the
  * release rootfs image in RAM): amd64 = GRUB multiboot2 MODULE tag; aarch64 =
- * none today (returns 0).  Equivalent HAL contract on both arches; the result
+ * NX-HAL UEFI boot-info module selected by the NX-CORE project catalog.  Equivalent HAL contract on both arches; the result
  * is cached on first call so it stays valid after the early identity map is
  * gone.  Returns 1 and fills base/size (physical) when present, else 0. */
 int arch_platform_get_boot_module(uint64_t *base, uint64_t *size) NX_MUST_USE;

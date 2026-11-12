@@ -46,7 +46,8 @@ enum nxhal_boot_memory_status {
 enum nxhal_boot_live_span_kind {
   NXHAL_BOOT_LIVE_FDT = 1,
   NXHAL_BOOT_LIVE_FIRMWARE_MAP = 2,
-  NXHAL_BOOT_LIVE_ROLE_COUNT = 2
+  NXHAL_BOOT_LIVE_MODULE = 3,
+  NXHAL_BOOT_LIVE_ROLE_COUNT = 3
 };
 
 struct nxhal_boot_live_span {
@@ -70,7 +71,7 @@ enum nxhal_boot_memory_status nxhal_boot_memory_get(
 /* Boot-live spans are immutable handoff buffers that remain referenced after
  * the first kernel page-table switch. They are mappings, not allocator input:
  * NX-CORE must preserve them without reclassifying firmware-reserved pages as
- * usable RAM. The current ABI has two semantic roles, not an arbitrary list. */
+ * usable RAM. The current ABI has three semantic roles, not an arbitrary list. */
 uint32_t nxhal_boot_live_span_count(void);
 enum nxhal_boot_memory_status nxhal_boot_live_span_get(
     uint32_t index, struct nxhal_boot_live_span *out);

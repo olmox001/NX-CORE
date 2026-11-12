@@ -2,8 +2,8 @@
 #define NXHAL_BOOT_INFO_H
 
 #define NXHAL_BOOT_INFO_MAGIC              0x4E584249
-#define NXHAL_BOOT_INFO_VERSION            2
-#define NXHAL_BOOT_INFO_SIZE               64
+#define NXHAL_BOOT_INFO_VERSION            3
+#define NXHAL_BOOT_INFO_SIZE               80
 
 #define NXHAL_BOOT_INFO_FDT_PHYS_OFFSET    0
 #define NXHAL_BOOT_INFO_FDT_SIZE_OFFSET    8
@@ -17,7 +17,9 @@
 #define NXHAL_BOOT_INFO_FW_MAP_RECORD_SIZE_OFFSET 44
 #define NXHAL_BOOT_INFO_EBS_ATTEMPTS_OFFSET 48
 #define NXHAL_BOOT_INFO_MAP_GROWTHS_OFFSET 52
-#define NXHAL_BOOT_INFO_RESERVED0_OFFSET   56
+#define NXHAL_BOOT_INFO_MODULE_PHYS_OFFSET 56
+#define NXHAL_BOOT_INFO_MODULE_SIZE_OFFSET 64
+#define NXHAL_BOOT_INFO_RESERVED0_OFFSET   72
 
 #define NXHAL_BOOT_SOURCE_UNKNOWN      0
 #define NXHAL_BOOT_SOURCE_AARCH64_EFI  1
@@ -27,6 +29,7 @@
 #define NXHAL_BOOT_FLAG_LEGACY_TRUSTED_INPUT 0x00000002
 #define NXHAL_BOOT_FLAG_LEGACY_SEARCH         0x00000004
 #define NXHAL_BOOT_FLAG_UEFI_MAP_VALID         0x00000008
+#define NXHAL_BOOT_FLAG_MODULE_VALID           0x00000010
 
 #define NXHAL_UEFI_MEMORY_RECORD_SIZE 40
 #define NXHAL_UEFI_EXIT_MAX_ATTEMPTS 3
@@ -49,21 +52,13 @@ struct nxhal_boot_info {
   uint32_t firmware_map_record_size;
   uint32_t ebs_attempts;
   uint32_t map_growths;
+  uint64_t boot_module_phys;
+  uint64_t boot_module_size;
   uint64_t reserved0;
 };
 
-_Static_assert(sizeof(struct nxhal_boot_info) == NXHAL_BOOT_INFO_SIZE,
-               "NX-HAL boot-info ABI size mismatch");
-_Static_assert(offsetof(struct nxhal_boot_info, fdt_phys) ==
-                   NXHAL_BOOT_INFO_FDT_PHYS_OFFSET,
-               "boot-info fdt_phys offset mismatch");
-_Static_assert(offsetof(struct nxhal_boot_info, firmware_map_phys) ==
-                   NXHAL_BOOT_INFO_FW_MAP_PHYS_OFFSET,
-               "boot-info firmware_map_phys offset mismatch");
-_Static_assert(offsetof(struct nxhal_boot_info, reserved0) ==
-                   NXHAL_BOOT_INFO_RESERVED0_OFFSET,
-               "boot-info reserved0 offset mismatch");
-
+/* Layout is verified by tools/check-boot-info-layout.c. Production
+ * headers contain no static assertions under the Power12 policy. */
 extern struct nxhal_boot_info nxhal_boot_info;
 #endif
 

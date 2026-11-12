@@ -6,7 +6,8 @@
  * arch-neutral.  The arch-specific "is there a boot module, and where" lives
  * behind the HAL contract arch_platform_get_boot_module() (platform.h),
  * implemented equivalently per arch — so this driver carries no #ifdef.  On
- * aarch64 the HAL reports no module and this provider stays inert.
+ * aarch64 the UEFI loader publishes the selected catalog image through the
+ * same HAL module contract.
  */
 #include <kernel/block.h>
 #include <kernel/bootmodule.h>
