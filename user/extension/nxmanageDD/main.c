@@ -3,11 +3,12 @@
  *
  * Only the bootstrapped PID1 receives machine authority. No process paths,
  * startup order, service names or restart policy live in Core's main().
- * This generic manager reads its initializer from a protected VFS file,
- * creates ROOT service children, and owns their real process lifecycles.
+ * The storage provider publishes boot image identities into the machine
+ * registry; this manager consumes those identities and owns process lifecycle.
  * nxinit supplies the declarative catalog over a kernel-stamped PORT queue.
  */
 #include <nxmanage.h>
+#include <nxsystem_image.h>
 #include <os1.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -17,7 +18,7 @@
 struct nxm_slot {
   char name[NXMANAGE_NAME_MAX]; /* authoritative registry object identity */
   int named;
-  char path[56];
+  char image[NXSYSTEM_IMAGE_NAME_MAX];
   char args[48];
   char registry[40];
   int pid;
@@ -49,8 +50,7 @@ struct nxm_library {
 struct nxm_state {
   struct nxm_slot slots[NXMANAGE_SLOTS];
   struct nxm_library libraries[NXMANAGE_LIBRARY_SLOTS];
-  char init_path[96];
-  char project[NXMANAGE_PROJECT_MAX];
+  char init_image[NXSYSTEM_IMAGE_NAME_MAX];
   int init_pid;
   int init_started;
   int init_finished;
@@ -70,64 +70,17 @@ static int nxm_string(const char *src, unsigned cap, unsigned *len) {
   return -1;
 }
 
-static int nxm_boot_init_path(char init_path[96]) {
-  char line[102U];
-  int n = file_read(NXMANAGE_INIT_CONFIG, line, sizeof(line) - 1U, 0);
-  if (n < 12 || n >= (int)sizeof(line))
+static int nxm_boot_init_image(char image[NXSYSTEM_IMAGE_NAME_MAX]) {
+  int status = OS1_registry_object_get(NXSYSTEM_BOOT_INIT_IMAGE_KEY, image,
+                                       NXSYSTEM_IMAGE_NAME_MAX);
+  if (status != 0 || !nxsystem_image_identity_valid(image))
     return -1;
-  line[n] = '\0';
-  if (n > 0 && line[n - 1] == '\n')
-    line[--n] = '\0';
-  if (n > 0 && line[n - 1] == '\r')
-    line[--n] = '\0';
-  if (strncmp(line, "init=/sbin/", 11U) != 0 || n <= 11)
-    return -1;
-  for (int i = 11; i < 102; ++i) {
-    if (i >= n)
-      break;
-    char ch = line[i];
-    if (!((ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') ||
-          (ch >= '0' && ch <= '9') || ch == '_' || ch == '-'))
-      return -1;
-  }
-  if (n - 4 > 96)
-    return -1;
-  for (int k = 0; k < 96; ++k) {
-    if (k > n - 5)
-      break;
-    init_path[k] = line[k + 5];
-  }
-  return 0;
-}
-
-static int nxm_boot_project(char project[NXMANAGE_PROJECT_MAX]) {
-  char line[NXMANAGE_PROJECT_MAX + 2U] = {0};
-  int n = file_read(NXMANAGE_PROJECT_CONFIG, line, sizeof(line) - 1U, 0);
-
-  if (n <= 0 || n >= (int)sizeof(line))
-    return -1;
-  if (n > 0 && line[n - 1] == '\n')
-    --n;
-  if (n > 0 && line[n - 1] == '\r')
-    --n;
-  if (n <= 0 || n >= (int)NXMANAGE_PROJECT_MAX)
-    return -1;
-  for (unsigned i = 0U; i + 1U < NXMANAGE_PROJECT_MAX; ++i) {
-    if (i < (unsigned)n) {
-      char ch = line[i];
-      if (!((ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') ||
-            (ch >= '0' && ch <= '9') || ch == '_' || ch == '-'))
-        return -1;
-      project[i] = ch;
-    }
-  }
-  project[n] = 0;
   return 0;
 }
 
 static void nxm_log_manager(const struct nxm_state *state) {
-  int written = printf("[NXMANAGE] System=%s init=%s manager-ready pid=1\n",
-                       state->project, state->init_path);
+  int written = printf("[NXMANAGE] init-image=%s manager-ready pid=1\n",
+                       state->init_image);
   if (written < 0)
     OS1_report_error("nxmanage.uart_manager", -EIO);
 }
@@ -135,38 +88,20 @@ static void nxm_log_manager(const struct nxm_state *state) {
 static void nxm_log_service(const struct nxm_slot *slot, unsigned id,
                             const char *event, int pid) {
   int written = printf("[NXMANAGE] service=%s slot=%u event=%s pid=%d "
-                       "generation=%u mode=%u path=%s\n",
+                       "generation=%u mode=%u image=%s\n",
                        slot->name, id, event, pid, slot->generation,
-                       slot->mode, slot->path);
+                       slot->mode, slot->image);
   if (written < 0)
     OS1_report_error("nxmanage.uart_service", -EIO);
-}
-
-static int nxm_service_path(const char *path) {
-  const char *rest = NULL;
-  if (strncmp(path, "/sys/bin/", 9U) == 0)
-    rest = path + 9;
-  else if (strncmp(path, "/sys/services/", 14U) == 0)
-    rest = path + 14;
-  if (rest == NULL || *rest == '\0')
-    return 0;
-  for (unsigned i = 0U; i < 56U; ++i) {
-    char ch = rest[i];
-    if (ch == '\0')
-      return 1;
-    if (!((ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') ||
-          (ch >= '0' && ch <= '9') || ch == '_' || ch == '-'))
-      return 0;
-  }
-  return 0;
 }
 
 static int nxm_unpack(const struct ipc_message *message,
                       struct nxm_slot *candidate) {
   const char *base = message->payload;
   unsigned offset = 0U;
-  char *dest[3] = {candidate->path, candidate->args, candidate->registry};
-  unsigned capacities[3] = {sizeof(candidate->path), sizeof(candidate->args),
+  char *dest[3] = {candidate->image, candidate->args,
+                   candidate->registry};
+  unsigned capacities[3] = {sizeof(candidate->image), sizeof(candidate->args),
                             sizeof(candidate->registry)};
   for (unsigned field = 0U; field < 3U; ++field) {
     unsigned length = 0U;
@@ -182,7 +117,7 @@ static int nxm_unpack(const struct ipc_message *message,
     }
     offset += length + 1U;
   }
-  if (!nxm_service_path(candidate->path) ||
+  if (!nxsystem_image_identity_valid(candidate->image) ||
       (candidate->registry[0] != '\0' &&
        strncmp(candidate->registry, "srv.", 4U) != 0))
     return -1;
@@ -193,13 +128,14 @@ static int nxm_spawn(const struct nxm_slot *slot) {
   if (!slot->auth_set)
     return -EPERM;
   if (slot->args[0] == '\0')
-    return (int)spawn_caps(slot->path, PLVL_ROOT, slot->caps);
+    return (int)nxsystem_image_spawn(NXSYSTEM_IMAGE_CLASS_SERVICE,
+                                     slot->image, PLVL_ROOT, slot->caps);
   if (slot->caps != CAP_ALL)
     return -EINVAL; /* argumentful capability-spawn needs an argv-aware API */
   char args[sizeof(slot->args)];
   for (unsigned i = 0U; i < sizeof(args); ++i)
     args[i] = slot->args[i];
-  char *argv[3] = {(char *)slot->path, NULL, NULL};
+  char *argv[3] = {(char *)slot->image, NULL, NULL};
   unsigned argc = 1U, offset = 0U;
   for (unsigned i = 0U; i < sizeof(args); ++i) {
     char ch = args[i];
@@ -215,7 +151,8 @@ static int nxm_spawn(const struct nxm_slot *slot) {
     if (ch == '\0')
       break;
   }
-  return spawn_args(slot->path, (int)argc, argv);
+  return (int)nxsystem_image_spawn_args(
+      NXSYSTEM_IMAGE_CLASS_SERVICE, slot->image, (int)argc, argv);
 }
 
 /* One stable registry object per canonical service name; a reader cannot
@@ -278,7 +215,7 @@ static int nxm_matching(const struct nxm_slot *old,
                         const struct nxm_slot *candidate) {
   return old->mode == candidate->mode &&
          old->caps == candidate->caps &&
-         strcmp(old->path, candidate->path) == 0 &&
+         strcmp(old->image, candidate->image) == 0 &&
          strcmp(old->args, candidate->args) == 0 &&
          strcmp(old->registry, candidate->registry) == 0;
 }
@@ -677,7 +614,8 @@ static void nxm_supervise_init(struct nxm_state *state) {
     return;
   if (!state->init_started) {
     state->init_started = 1;
-    state->init_pid = (int)spawn_caps(state->init_path, PLVL_ROOT, CAP_ALL);
+    state->init_pid = (int)nxsystem_image_spawn(
+        NXSYSTEM_IMAGE_CLASS_INIT, state->init_image, PLVL_ROOT, CAP_ALL);
     if (state->init_pid <= 0) {
       OS1_report_error("nxmanage.initializer_spawn", state->init_pid);
       state->init_pid = 0;
@@ -709,8 +647,7 @@ static void nxm_supervise_init(struct nxm_state *state) {
 
 int main(void) {
   struct nxm_state state = {0};
-  if (get_pid() != 1 || nxm_boot_init_path(state.init_path) != 0 ||
-      nxm_boot_project(state.project) != 0) {
+  if (get_pid() != 1 || nxm_boot_init_image(state.init_image) != 0) {
     OS1_report_error("nxmanage.pid1_boot_config", -EPERM);
     return 1;
   }
@@ -721,9 +658,7 @@ int main(void) {
                                            OS1_RIGHT_WRITE | OS1_RIGHT_TRANSFER,
                                            OBJ_TYPE_PORT);
   int pid_saved = OS1_registry_object_set("system.manage.pid", "1");
-  int system_saved =
-      OS1_registry_object_set("system.manage.current", state.project);
-  if (port < 0 || send_handle < 0 || pid_saved != 0 || system_saved != 0) {
+  if (port < 0 || send_handle < 0 || pid_saved != 0) {
     OS1_report_error("nxmanage.bind_authority", -EIO);
     return 1;
   }

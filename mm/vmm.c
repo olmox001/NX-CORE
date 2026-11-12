@@ -431,8 +431,14 @@ static void vmm_map_boot_live_spans(uint64_t *pgd, const char *phase) {
     end = (end + PAGE_SIZE - 1U) & ~((uint64_t)PAGE_SIZE - 1U);
     if (end <= start || !hal_phys_range_valid(start, end))
       panic("VMM: %s boot-live span %u outside direct-map window", phase, index);
+    uint64_t flags = PAGE_KERNEL_RO;
+    if (span.kind == (uint32_t)NXHAL_BOOT_LIVE_MODULE)
+      flags = PAGE_KERNEL;
+    else if (span.kind != (uint32_t)NXHAL_BOOT_LIVE_FDT &&
+             span.kind != (uint32_t)NXHAL_BOOT_LIVE_FIRMWARE_MAP)
+      panic("VMM: %s unknown boot-live span kind %u", phase, span.kind);
     if (arch_vmm_map_range(virt_to_phys(pgd), (uint64_t)phys_to_virt(start),
-                           start, end - start, PAGE_KERNEL_RO) != 0)
+                           start, end - start, flags) != 0)
       panic("VMM: %s boot-live span %u map failed", phase, index);
     pr_info("VMM: %s boot-live[%u] kind=%u 0x%lx-0x%lx\n",
             phase, index, span.kind, start, end);

@@ -11,6 +11,7 @@
 #include <kernel/nx_contract.h>
 
 #define NX_BOOT_REGISTRY_KEY "system.boot.entry"
+#define NX_BOOT_INIT_IMAGE_KEY "system.boot.init_image"
 #define NX_BOOT_EXEC_PATH_MAX 96U
 
 /* Mount concrete storage behind the unified object namespace. */

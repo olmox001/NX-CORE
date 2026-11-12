@@ -930,6 +930,32 @@ KTEST_CASE(test_vmm_boot_firmware_map_mapping) {
                span.base + span.length - 1U);
 }
 
+KTEST_CASE(test_vmm_boot_module_mapping) {
+    extern uint64_t *kernel_pgd;
+    struct nxhal_boot_live_span span;
+
+    if (!ktest_boot_live_span(NXHAL_BOOT_LIVE_MODULE, &span))
+        return;
+    KASSERT(span.length != 0U);
+    KASSERT_EQ(vmm_get_phys(kernel_pgd, (uint64_t)phys_to_virt(span.base)),
+               span.base);
+    KASSERT_EQ(vmm_get_phys(kernel_pgd,
+                           (uint64_t)phys_to_virt(span.base + span.length - 1U)),
+               span.base + span.length - 1U);
+}
+
+KTEST_CASE(test_vmm_boot_module_writable) {
+    struct nxhal_boot_live_span span;
+
+    if (!ktest_boot_live_span(NXHAL_BOOT_LIVE_MODULE, &span))
+        return;
+    KASSERT(span.length != 0U);
+    volatile uint8_t *byte = (volatile uint8_t *)phys_to_virt(span.base);
+    uint8_t original = *byte;
+    *byte = original;
+    KASSERT_EQ(*byte, original);
+}
+
 /* test_vmm_protect - prove arch_vmm_protect rewrites live PTEs (AMMU-02).
  * Takes a fresh PMM page (mapped RW+NX inside a 2MB kernel RAM block),
  * flips it to PAGE_KERNEL_RO and back, and checks via PTE readback
