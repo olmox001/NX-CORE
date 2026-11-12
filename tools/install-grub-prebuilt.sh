@@ -12,9 +12,8 @@ ARCHIVE="${1:-}"
 }
 
 KERNEL_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-PROJECT_ROOT="$(cd "$KERNEL_ROOT/.." && pwd)"
-BUILD_ROOT="${NEXS_BUILD_ROOT:-$PROJECT_ROOT/build}"
-LOCK="$PROJECT_ROOT/boot/grub/manifest.env"
+BUILD_ROOT="${NEXS_BUILD_ROOT:-$KERNEL_ROOT/build}"
+LOCK="$KERNEL_ROOT/config/grub.env"
 
 [[ "$BUILD_ROOT" = /* ]] || {
     echo "[grub-install] NEXS_BUILD_ROOT must be absolute" >&2

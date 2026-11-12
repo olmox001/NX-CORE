@@ -1,0 +1,4 @@
+[submodule "external/grub"]
+	path = external/grub
+	url = https://github.com/olmox001/grub.git
+	branch = nexsos-port

@@ -2,8 +2,7 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-PROJECT_ROOT="$(cd "$ROOT/.." && pwd)"
-BUILD_ROOT="${NEXS_BUILD_ROOT:-$PROJECT_ROOT/build}"
+BUILD_ROOT="${NEXS_BUILD_ROOT:-$ROOT/build}"
 case "$BUILD_ROOT" in
     /*) ;;
     *) echo "[amd64-grub] NEXS_BUILD_ROOT must be absolute: $BUILD_ROOT" >&2; exit 1 ;;

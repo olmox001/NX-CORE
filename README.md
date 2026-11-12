@@ -4,23 +4,24 @@ NX-CORE is the standalone NexsOS1 kernel repository. It owns the kernel,
 architecture HALs, kernel drivers, kernel tests, kernel linker scripts,
 bootloader inputs, symbol generation, and all kernel build rules.
 
-It does not require NX-VIOLA, NX-SDK, or the NexsOS1 integration superproject
-to compile and boot the kernel.
+It does not require the NexsOS userland or the NexsOS1 integration superproject to compile and boot the kernel. NX-CORE does use the **NX-SDK development-tool plane** for the pinned compiler/toolchain contract and shared build/debug tooling. This is not a userland API/runtime dependency: kernel/HAL sources use NX-CORE-owned headers and the kernel image does not link the SDK runtime.
 
 ## Prerequisites
 
 - macOS or Linux host.
-- Pinned target cross-toolchain from config/toolchain-versions.env.
+- NX-SDK development tooling, resolved from the integrated superproject, an installed SDK, `NEXS_SDK_ROOT`, or the standalone SDK cache. The canonical toolchain lock is SDK-owned.
 - QEMU for boot tests.
-- GRUB BIOS + xorriso for amd64 boot media.
+- Pinned external GRUB source at `external/grub` plus the required host ISO tools for amd64 boot media.
 - For aarch64 UEFI media: curl, make, gawk, mtools, xorriso, the pinned AArch64
   cross-toolchain, and an EDK2/AAVMF code+vars firmware pair for QEMU execution.
 
-Install/check the module toolchain:
+Resolve/install the SDK-owned development toolchain and check the kernel boundary:
 
     make setup-deps
     make check ARCH=amd64
     make check ARCH=aarch64
+    make check-sdk-boundary ARCH=amd64
+    make check-sdk-boundary ARCH=aarch64
 
 ## Build independently
 
@@ -39,11 +40,10 @@ libraries, rootfs, disk images, or release packages.
     make boot-iso ARCH=aarch64
     make run ARCH=aarch64 UEFI_CODE=/path/to/edk2-aarch64-code.fd UEFI_VARS_TEMPLATE=/path/to/edk2-arm-vars.fd
 
-The amd64 route uses GRUB BIOS. The AArch64 route builds GRUB arm64-efi and
-the project EFI handoff image. Both run without a rootfs or userland image;
+The amd64 route uses the pinned `external/grub` source for GRUB BIOS. The AArch64 route builds GRUB arm64-efi from the same nested upstream source and the project EFI handoff image. Both run without a rootfs or userland image;
 K3 reports the expected kernel-alone mode when /sbin/nxinit is absent.
 
-For low-level QEMU diagnostics without GRUB, use run-direct.
+For low-level QEMU diagnostics without GRUB, use `run-direct`. The standalone debug surface also provides `debug`, `debug-direct`, `disasm`, `symbols`, `test-nxpax-core`, `test-nxpax-stress` and `test-debug`.
 
 ## Build ownership
 

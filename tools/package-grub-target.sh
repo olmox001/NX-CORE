@@ -3,10 +3,9 @@ set -euo pipefail
 
 TARGET="${1:-all}"
 KERNEL_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-PROJECT_ROOT="$(cd "$KERNEL_ROOT/.." && pwd)"
-BUILD_ROOT="${NEXS_BUILD_ROOT:-$PROJECT_ROOT/build}"
-RELEASE_ROOT="${NEXS_GRUB_RELEASE_ROOT:-$PROJECT_ROOT/release/grub}"
-LOCK="$PROJECT_ROOT/boot/grub/manifest.env"
+BUILD_ROOT="${NEXS_BUILD_ROOT:-$KERNEL_ROOT/build}"
+RELEASE_ROOT="${NEXS_GRUB_RELEASE_ROOT:-$KERNEL_ROOT/release/grub}"
+LOCK="$KERNEL_ROOT/config/grub.env"
 
 [[ "$BUILD_ROOT" = /* ]] || {
     echo "[grub-package] NEXS_BUILD_ROOT must be absolute" >&2
@@ -103,7 +102,7 @@ package_one() {
         echo "pipeline_revision=$NEXS_GRUB_PIPELINE_REVISION"
         echo "target=$flavor"
         echo "host=$host"
-        echo "source=boot/grub/upstream"
+        echo "source=external/grub"
         echo "stage_tree_sha256=$stage_hash"
     } > "$prebuilt/prebuilt-manifest.txt"
 

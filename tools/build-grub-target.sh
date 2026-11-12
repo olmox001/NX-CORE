@@ -32,15 +32,15 @@ esac
 LOG_PREFIX="grub-${BUILD_FLAVOR}"
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-PROJECT_ROOT="$(cd "$ROOT/.." && pwd)"
-GRUB_MANIFEST="$PROJECT_ROOT/boot/grub/manifest.env"
+GRUB_MANIFEST="$ROOT/config/grub.env"
 [[ -f "$GRUB_MANIFEST" ]] || {
     echo "[$LOG_PREFIX] missing GRUB manifest: $GRUB_MANIFEST" >&2
     exit 1
 }
 # shellcheck disable=SC1091
 set -a
-source "$ROOT/config/toolchain-versions.env"
+SDK_ROOT="${NEXS_SDK_ROOT:-$("$ROOT/tools/resolve-sdk.sh" --print)}"
+source "$SDK_ROOT/config/toolchain-versions.env"
 source "$GRUB_MANIFEST"
 set +a
 
@@ -49,8 +49,8 @@ PIPELINE_REVISION="$NEXS_GRUB_PIPELINE_REVISION"
 GRUB_COMMIT="$NEXS_GRUB_COMMIT"
 GRUB_PATCH_DIR="$ROOT/tools/patches/grub-2.14"
 GNULIB_REVISION="$NEXS_GRUB_GNULIB_REVISION"
-UPSTREAM="${NEXS_GRUB_SOURCE:-$PROJECT_ROOT/boot/grub/upstream}"
-BUILD_ROOT="${NEXS_BUILD_ROOT:-$PROJECT_ROOT/build}"
+UPSTREAM="${NEXS_GRUB_SOURCE:-$ROOT/external/grub}"
+BUILD_ROOT="${NEXS_BUILD_ROOT:-$ROOT/build}"
 case "$BUILD_ROOT" in
     /*) ;;
     *) echo "[$LOG_PREFIX] NEXS_BUILD_ROOT must be absolute: $BUILD_ROOT" >&2; exit 1 ;;

@@ -16,7 +16,10 @@ else ifeq ($(HOST_OS),Linux)
 else
   $(error Unsupported host OS $(HOST_OS))
 endif
-include $(KERNEL_ROOT)/config/toolchain-versions.env
+NXSDK_ROOT ?= $(shell $(KERNEL_ROOT)/tools/resolve-sdk.sh --print 2>/dev/null)
+ifneq ($(strip $(NXSDK_ROOT)),)
+  include $(NXSDK_ROOT)/config/toolchain-versions.env
+endif
 
 ifeq ($(ARCH),amd64)
   CROSS_COMPILE ?= $(AMD64_CROSS_COMPILE)
@@ -68,7 +71,7 @@ HAL_OBJECTS := $(HAL_ASM_OBJECTS) $(HAL_C_OBJECTS)
 HAL_LIB := $(BUILD_DIR)/libnxhal.a
 DEPS := $(HAL_C_OBJECTS:.o=.d)
 
-.PHONY: all clean check boundary test test-host test-cross test-sanitize test-static
+.PHONY: all clean check require-sdk boundary test test-host test-cross test-sanitize test-static
 all: $(HAL_LIB)
 
 $(HAL_LIB): $(HAL_OBJECTS)
@@ -101,7 +104,10 @@ test-static:
 boundary: $(HAL_LIB)
 	@tools/audit-boundary.sh $(ARCH)
 
-check: boundary
+require-sdk:
+	@$(KERNEL_ROOT)/tools/resolve-sdk.sh --check >/dev/null
+
+check: require-sdk boundary
 	@command -v "$(CC)" >/dev/null
 	@command -v "$(AR)" >/dev/null
 	@echo "NX-HAL $(ARCH): $$($(CC) --version | head -1)"

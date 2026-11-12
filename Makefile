@@ -20,7 +20,10 @@ else ifeq ($(HOST_OS),Linux)
 else
   $(error Unsupported host OS $(HOST_OS))
 endif
-include config/toolchain-versions.env
+NXSDK_ROOT ?= $(shell tools/resolve-sdk.sh --print 2>/dev/null)
+ifneq ($(strip $(NXSDK_ROOT)),)
+  include $(NXSDK_ROOT)/config/toolchain-versions.env
+endif
 
 ifeq ($(findstring amd64,$(ARCH)),amd64)
   override ARCH := amd64
@@ -102,11 +105,17 @@ LDFLAGS_KERN := -nostdlib -static -z noexecstack -T $(HAL_ARCH_DIR)/kernel.ld \
 include build.mk
 -include $(DEPS)
 
-.PHONY: all hal check check-contracts setup-deps clean run boot help
+.PHONY: all hal check check-contracts check-sdk-boundary setup-deps require-sdk print-sdk-root clean run boot debug debug-direct disasm symbols test-debug test-nxpax-core test-nxpax-stress help
 all: kernel bootloader
 hal: $(HAL_LIB)
 
-check: check-contracts
+require-sdk:
+	@tools/resolve-sdk.sh --check >/dev/null
+
+print-sdk-root:
+	@tools/resolve-sdk.sh --print
+
+check: require-sdk check-contracts check-sdk-boundary
 	@set -eu; for tool in "$(CC)" "$(LD)" "$(OBJCOPY)" "$(CROSS_COMPILE)nm"; do \
 	  command -v "$$tool" >/dev/null || { echo "missing tool: $$tool" >&2; exit 1; }; done
 	@case "$(ARCH):$$($(CC) -dumpmachine)" in \
@@ -117,12 +126,27 @@ check: check-contracts
 	@echo "NX-CORE $(ARCH): $$($(CC) --version | head -1)"
 
 setup-deps:
-	@if [ "$(HOST_OS)" = "Darwin" ]; then tools/setup-toolchain-macos.sh; \
-	elif [ "$(HOST_OS)" = "Linux" ]; then tools/setup-toolchain-linux.sh; \
+	@set -eu; sdk="$$(tools/resolve-sdk.sh --ensure)"; \
+	if [ "$(HOST_OS)" = "Darwin" ]; then "$$sdk/tools/setup-toolchain-macos.sh"; \
+	elif [ "$(HOST_OS)" = "Linux" ]; then "$$sdk/tools/setup-toolchain-linux.sh"; \
 	else echo "Unsupported host OS: $(HOST_OS)" >&2; exit 1; fi
 
 check-contracts:
 	@tools/check-contract-snapshot.sh
+
+check-sdk-boundary:
+	@set -eu; \
+	case "$(KERNEL_CFLAGS)" in *"$(NXSDK_ROOT)/include"*) \
+	  echo "NX-CORE boundary violation: kernel CFLAGS include NX-SDK headers" >&2; exit 1;; esac; \
+	case "$(LDFLAGS_KERN) $(KERN_OBJECTS) $(HAL_LIB)" in *libnxsdk*|*"$(NXSDK_ROOT)/runtime"*) \
+	  echo "NX-CORE boundary violation: kernel image links NX-SDK userland runtime" >&2; exit 1;; esac; \
+	if { find core lib drivers HAL -type f \
+	       \( -name '*.c' -o -name '*.h' -o -name '*.S' -o -name '*.s' \) -print; \
+	     printf '%s\n' main.c; } | xargs grep -n -E \
+	       '#[[:space:]]*include[[:space:]]*[<"]([^">]*/)?system/include|NEXS_SDK_ROOT|NXSDK_ROOT' 2>/dev/null; then \
+	  echo "NX-CORE boundary violation: compiled kernel/HAL source reaches into NX-SDK implementation" >&2; exit 1; \
+	fi; \
+	echo "NX-CORE SDK boundary: PASS (SDK development tools only; no userland API/runtime in kernel image)"
 
 clean:
 	rm -rf "$(BUILD_DIR)"
@@ -167,8 +191,95 @@ run-direct: kernel $(BUILD_DIR)/virt.dtb
 	$(QEMU) -machine virt -cpu cortex-a57 -m 5G -smp 4 -serial stdio \
 	  -display none -no-reboot -dtb $(BUILD_DIR)/virt.dtb -kernel "$(KERNEL_BIN)"
 endif
+
+debug: boot-iso
+ifeq ($(ARCH),amd64)
+	$(QEMU) -machine q35 -cpu max -m 5G -smp 4 -serial stdio -display none -no-reboot -s -S -cdrom $(BUILD_DIR)/grub-bios.iso
+else
+	@test -f "$(UEFI_CODE)" || { echo "Missing AArch64 EDK2 code image; set UEFI_CODE" >&2; exit 1; }
+	@test -f "$(UEFI_VARS_TEMPLATE)" || { echo "Missing AArch64 EDK2 vars template; set UEFI_VARS_TEMPLATE" >&2; exit 1; }
+	@cp "$(UEFI_VARS_TEMPLATE)" "$(BUILD_DIR)/grub-efi/vars.fd"
+	$(QEMU) -machine virt -cpu cortex-a57 -m 5G -smp 4 -serial stdio -display none -no-reboot -s -S -boot order=d \
+	  -drive if=pflash,format=raw,unit=0,readonly=on,file="$(UEFI_CODE)" \
+	  -drive if=pflash,format=raw,unit=1,file="$(BUILD_DIR)/grub-efi/vars.fd" \
+	  -device virtio-scsi-device,id=scsi0 \
+	  -drive if=none,file=$(BUILD_DIR)/grub-efi/nexsos-aarch64-uefi.iso,id=cdrom,media=cdrom,format=raw \
+	  -device scsi-cd,drive=cdrom
+endif
+
+debug-direct: kernel
+ifeq ($(ARCH),amd64)
+	$(QEMU) -machine q35 -cpu max -m 5G -smp 4 -serial stdio -display none -no-reboot -s -S -kernel "$(KERNEL_ELF)"
+else
+	$(QEMU) -machine virt -cpu cortex-a57 -m 5G -smp 4 -serial stdio -display none -no-reboot -s -S -dtb $(BUILD_DIR)/virt.dtb -kernel "$(KERNEL_BIN)"
+endif
+
+disasm: kernel bootloader
+	$(OBJDUMP) -d $(KERNEL_ELF) > $(BUILD_DIR)/kernel.disasm
+	$(OBJDUMP) -d $(BOOTLOADER_ELF) > $(BUILD_DIR)/bootloader.disasm
+
+symbols: kernel
+	$(CROSS_COMPILE)nm -n $(KERNEL_ELF) > $(BUILD_DIR)/kernel.symbols
+
+test-nxpax-core:
+	@mkdir -p $(BUILD_ROOT)/tests/nxpax
+	@clang -std=c17 -O1 -g -Wall -Wextra -Werror -Wpedantic \
+	  -fsanitize=address,undefined -fno-omit-frame-pointer \
+	  -IHAL/include -Iinclude test/nxpax_core_test.c core/nxpax.c HAL/core/nxpax.c \
+	  -o $(BUILD_ROOT)/tests/nxpax/core_test
+	@$(BUILD_ROOT)/tests/nxpax/core_test
+
+test-nxpax-stress:
+	@mkdir -p $(BUILD_ROOT)/tests/nxpax
+	@clang -std=c17 -O1 -g -Wall -Wextra -Werror -Wpedantic \
+	  -fsanitize=address,undefined -fno-omit-frame-pointer -pthread \
+	  -IHAL/include HAL/tests/unit/nxpax_stress_test.c HAL/core/nxpax.c \
+	  -o $(BUILD_ROOT)/tests/nxpax/stress_test
+	@$(BUILD_ROOT)/tests/nxpax/stress_test
+
+test-debug: test-nxpax-core test-nxpax-stress
+	@$(MAKE) -C HAL test-host
+
 boot: run
 
 help:
 	@echo "NX-CORE standalone: make [ARCH=amd64|aarch64] all"
-	@echo "Targets: hal kernel bootloader check run/boot clean"
+	@echo "Targets: hal kernel bootloader machine-extension check run/boot debug debug-direct disasm symbols test-debug clean"
+
+# NX-CORE-owned machine extension. It runs in user mode but remains a kernel
+# repository artifact; NX-VIOLA never reaches into kernel source to build it.
+NXSDK_SOURCE_LAYOUT := $(wildcard $(NXSDK_ROOT)/lib/lib.c)
+NXSDK_MACHINE_BUILD_ROOT := $(abspath $(BUILD_ROOT))/sdk-machine
+ifeq ($(strip $(NXSDK_SOURCE_LAYOUT)),)
+  NXSDK_MACHINE_LIB := $(firstword $(wildcard $(NXSDK_ROOT)/runtime/$(ARCH)/lib/libnxsdk-core.a $(NXSDK_ROOT)/runtime/$(ARCH)/lib/libnxsdk.a))
+  NXSDK_MACHINE_CRT := $(NXSDK_ROOT)/runtime/$(ARCH)/crt/syscall.o
+else
+  NXSDK_MACHINE_LIB := $(NXSDK_MACHINE_BUILD_ROOT)/$(ARCH)/libnxsdk-core.a
+  NXSDK_MACHINE_CRT := $(NXSDK_MACHINE_BUILD_ROOT)/$(ARCH)/system/arch/$(ARCH)/syscall.o
+endif
+MACHINE_EXT_OBJ := $(BUILD_DIR)/user/extension/nxmanageDD/main.o
+MACHINE_EXT_ELF := $(BUILD_DIR)/nxmanageDD.elf
+MACHINE_EXT_CFLAGS := $(COMMON_FLAGS) $(ARCH_CFLAGS) \
+  -I$(NXSDK_ROOT)/include/contract -I$(NXSDK_ROOT)/include/api \
+  -ffunction-sections -fdata-sections
+
+.PHONY: machine-sdk machine-extension
+machine-sdk: require-sdk
+ifneq ($(strip $(NXSDK_SOURCE_LAYOUT)),)
+	+$(MAKE) -C $(NXSDK_ROOT) ARCH=$(ARCH) BUILD_ROOT="$(NXSDK_MACHINE_BUILD_ROOT)" core-archive
+else
+	@test -n "$(NXSDK_MACHINE_LIB)" && test -s "$(NXSDK_MACHINE_LIB)" || { echo "NX-CORE: installed SDK core/full runtime missing for $(ARCH)" >&2; exit 1; }
+	@test -s "$(NXSDK_MACHINE_CRT)" || { echo "NX-CORE: installed SDK startup object missing for $(ARCH)" >&2; exit 1; }
+endif
+
+$(MACHINE_EXT_OBJ): user/extension/nxmanageDD/main.c | machine-sdk
+	@mkdir -p $(dir $@)
+	@$(CC) $(MACHINE_EXT_CFLAGS) -MMD -MP -c $< -o $@
+
+$(MACHINE_EXT_ELF): $(MACHINE_EXT_OBJ) | machine-sdk
+	@$(CC) $(MACHINE_EXT_CFLAGS) -Wl,--gc-sections -Wl,-Ttext=0x80000000 -e _start \
+	  -o $@ $(MACHINE_EXT_OBJ) $(NXSDK_MACHINE_CRT) \
+	  -Wl,--start-group $(NXSDK_MACHINE_LIB) -lgcc -Wl,--end-group
+
+machine-extension: $(MACHINE_EXT_ELF)
+	@echo "NX-CORE machine extension: $(MACHINE_EXT_ELF)"
