@@ -1,24 +1,9 @@
 # NX-CORE local contract snapshot
 
-NX-CORE must build from its own checkout without NX-SDK or NX-VIOLA. The kernel
-therefore carries a local, checksummed snapshot of the declarations that its
-current implementation consumes.
+NX-CORE builds and checks from its own checkout without NX-SDK or NX-VIOLA.
 
-This is a transitional snapshot of the existing contract headers, not a shared
-repository include directory and not a second implementation of runtime code.
-The maintainer's 2026-07-18 ruling is authoritative: a shared include/abi tree
-is conceptually wrong because it preserves kernel↔userland coupling under a
-different name. Kernel-owned definitions live in NX-CORE; the SDK receives its
-own versioned, spec-derived declarations and compatibility tests.
+`contracts/version.json` defines the kernel contract scopes. The `abi` scope covers every header in `include/abi/`; changing any of those headers requires increasing its revision. The `support` scope covers `include/api/` loader/compiler support headers and is fully checksummed but is not a userland ABI revision.
 
-The snapshot currently contains:
-- include/abi/*.h — legacy ABI declarations still consumed by kernel source;
-- include/api/elf.h — ELF wire-format declarations consumed by the loader;
-- include/api/stdbool.h — compiler compatibility header selected by kernel.
+`tools/check-contract-snapshot.py` verifies that each configured scope snapshot enumerates every header exactly once, rejects stale or missing entries, validates SHA-256 content hashes, and checks revision bumps against both the current worktree and the previous committed revision when Git history is available. `make check-contracts` runs this gate.
 
-The next contract phase must classify every declaration, move kernel-only
-helpers into kernel headers, define normative HAL/kernel requirements and
-generate the SDK-facing contract snapshot from the versioned specification.
-Do not treat the legacy root include/abi directory as canonical.
-
-The local snapshot integrity is checked by make check-contracts.
+The NexsOS1 integration repository performs the additional cross-repository compatibility check against the pinned NX-SDK gitlink. NX-CORE never includes headers directly from NX-SDK.

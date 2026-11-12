@@ -1,6 +1,6 @@
-/* Kernel copy of the versioned compositord bridge contract.
- * Keep byte-for-byte synchronized with system/include/contract/os1_compositor.h.
- */
+/* Versioned bridge between the legacy window objects and ring-3 compositord.
+ * This is a transitional copy/present ABI: it keeps legacy window creation
+ * intact while scene policy and pixel composition run in userland. */
 #ifndef OS1_COMPOSITOR_H
 #define OS1_COMPOSITOR_H
 
@@ -26,7 +26,7 @@ struct os1_window_snapshot_v1 {
   uint32_t background_argb;
   uint32_t reserved;
   size_t pixel_count;
-  uint32_t *pixels;
+  uint32_t *pixels; /* user pointer, optional for metadata-only query */
   size_t pixel_capacity;
   char title[OS1_COMPOSITOR_TITLE_MAX];
 };
@@ -36,7 +36,7 @@ struct os1_compositor_present_v1 {
   uint32_t struct_size;
   int32_t width;
   int32_t height;
-  int32_t stride;
+  int32_t stride; /* pixels per row; v1 requires stride == width */
   uint32_t reserved;
   const uint32_t *pixels;
   size_t pixel_capacity;
