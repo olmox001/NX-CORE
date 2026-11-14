@@ -317,7 +317,12 @@ MACHINE_EXT_ELF := $(BUILD_DIR)/nxmanageDD.elf
 NXSDK_ROOT_FOR_EXT := $(NXSDK_ROOT)
 -include $(NXSDK_ROOT)/config/extension-paths.mk
 -include $(NXSDK_ROOT)/config/userkit-paths.mk
-MACHINE_EXT_CFLAGS := $(COMMON_FLAGS) $(ARCH_CFLAGS) \
+ifeq ($(ARCH),amd64)
+MACHINE_EXT_STACK_FLAGS := -Wa,--noexecstack
+else
+MACHINE_EXT_STACK_FLAGS :=
+endif
+MACHINE_EXT_CFLAGS := $(COMMON_FLAGS) $(ARCH_CFLAGS) $(MACHINE_EXT_STACK_FLAGS) \
   -I$(NXSDK_ROOT)/include/contract -I$(NXSDK_ROOT)/include/api \
   $(NXSDK_EXTENSION_INCLUDE_FLAGS) $(NXSDK_USERKIT_INCLUDE_FLAGS) -ffunction-sections -fdata-sections
 
