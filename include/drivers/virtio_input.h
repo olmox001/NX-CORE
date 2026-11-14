@@ -9,6 +9,12 @@
 
 #include <drivers/input_codes.h>
 
+#define VIRTIO_INPUT_QUEUE_SIZE UINT32_C(16)
+
+static inline int virtio_input_descriptor_id_valid(uint32_t id) {
+  return id < VIRTIO_INPUT_QUEUE_SIZE;
+}
+
 /* Input Event Structure (8 bytes) */
 struct virtio_input_event {
   uint16_t type;

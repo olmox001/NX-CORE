@@ -373,6 +373,17 @@ struct window {
                   */
 };
 
+static int window_pixel_count(int width, int height, size_t *count_out) {
+  if (!count_out || width <= 0 || height <= 0)
+    return -1;
+  size_t width_sz = (size_t)width;
+  size_t height_sz = (size_t)height;
+  if (width_sz > (size_t)-1 / height_sz)
+    return -1;
+  *count_out = width_sz * height_sz;
+  return 0;
+}
+
 /* Global State */
 static struct window windows[MAX_WINDOWS];
 static int window_count = 0;
@@ -447,8 +458,11 @@ static int window_region_has_alpha(struct window *win, int x, int y, int w,
   if (x2 <= x1 || y2 <= y1)
     return 0;
 
+  if (win->width <= 0)
+    return 0;
+  size_t width_sz = (size_t)win->width;
   for (int py = y1; py < y2; py++) {
-    uint32_t *row = win->buffer + (size_t)py * win->width;
+    uint32_t *row = win->buffer + (size_t)py * width_sz;
     for (int px = x1; px < x2; px++) {
       if ((row[px] >> 24) != 0xFF)
         return 1;
@@ -1462,12 +1476,19 @@ int compositor_resize_window(int window_id, int w, int h) {
   }
 
   /* Allocate the new surface before touching the live one. */
-  uint32_t *nbuf = (uint32_t *)kmalloc((size_t)w * h * 4);
+  size_t new_pixels = 0U;
+  if (window_pixel_count(w, h, &new_pixels) != 0 ||
+      new_pixels > (size_t)-1 / sizeof(uint32_t)) {
+    spin_unlock_irqrestore(&compositor_lock, flags);
+    return -1;
+  }
+  uint32_t *nbuf =
+      (uint32_t *)kmalloc(new_pixels * sizeof(uint32_t));
   if (!nbuf) {
     spin_unlock_irqrestore(&compositor_lock, flags);
     return -1;
   }
-  for (int p = 0; p < w * h; p++)
+  for (size_t p = 0U; p < new_pixels; ++p)
     nbuf[p] = win->bg_color;
 
   /* Damage the OLD on-screen footprint so the vacated area is repainted. */
@@ -1524,11 +1545,14 @@ static void __clear_other_carets_locked(int keep_pid) {
     struct window *win = &windows[i];
     if (win->id == 0 || !win->term.caret_shown || win->pid == keep_pid)
       continue;
+    size_t pixel_count = 0U;
+    if (window_pixel_count(win->width, win->height, &pixel_count) != 0)
+      continue;
     struct gl_surface s = {.width = win->width,
                            .height = win->height,
                            .stride = win->width,
                            .buffer = win->buffer,
-                           .capacity = (size_t)win->width * win->height};
+                           .capacity = pixel_count};
     gfx_surface_verify(&s, "__clear_other_carets_locked/win");
     term_clear_caret(&win->term, &s);
     win->term.focused = 0;
@@ -1568,11 +1592,16 @@ void compositor_window_write(int win_id, const char *buf, size_t count) {
     return;
   }
 
+  size_t pixel_count = 0U;
+  if (window_pixel_count(win->width, win->height, &pixel_count) != 0) {
+    spin_unlock_irqrestore(&compositor_lock, flags);
+    return;
+  }
   struct gl_surface win_surf = {.width = win->width,
                                 .height = win->height,
                                 .stride = win->width,
                                 .buffer = win->buffer,
-                                .capacity = (size_t)win->width * win->height};
+                                .capacity = pixel_count};
   gfx_surface_verify(&win_surf, "compositor_window_write/win");
 
   /* The caret is drawn only on the window that currently owns keyboard input.
@@ -1657,9 +1686,12 @@ static void draw_rect_internal(int window_id, int x, int y, int w, int h,
         ch = windows[i].height - cy;
 
       if (cw > 0 && ch > 0) {
-        uint32_t *row_base = windows[i].buffer + (size_t)cy * windows[i].width;
+        size_t width_sz = (size_t)windows[i].width;
+        uint32_t *row_base =
+            windows[i].buffer + (size_t)cy * width_sz;
         for (int dy = 0; dy < ch; dy++) {
-          uint32_t *row = row_base + (size_t)dy * windows[i].width + cx;
+          uint32_t *row =
+              row_base + (size_t)dy * width_sz + (size_t)cx;
           for (int dx = 0; dx < cw; dx++)
             row[dx] = color;
         }
@@ -1782,13 +1814,18 @@ void compositor_blit(int window_id, int x, int y, int w, int h,
         if (copy_w <= 0)
           break; /* every row has the same (empty) X range: nothing to do */
 
-        /* Use copy_from_user instead of raw memcpy for security */
-        void *dst_ptr = &windows[i].buffer[py * windows[i].width + dest_x];
-        const void *src_ptr =
-            &user_buf[(size_t)(src_row_offset + dy) * w + src_x];
+        /* Use copy_from_user instead of raw memcpy for security.  The
+         * caller rect and destination window are both validated <=4096, so
+         * these non-negative indices are representable before conversion. */
+        size_t dst_index =
+            (size_t)py * (size_t)windows[i].width + (size_t)dest_x;
+        size_t src_row = (size_t)(src_row_offset + dy);
+        size_t src_index = src_row * (size_t)w + (size_t)src_x;
+        size_t copy_bytes = (size_t)copy_w * sizeof(uint32_t);
+        void *dst_ptr = &windows[i].buffer[dst_index];
+        const void *src_ptr = &user_buf[src_index];
 
-        if (vmm_copy_from_user(dst_ptr, src_ptr, copy_w * sizeof(uint32_t)) !=
-            0) {
+        if (vmm_copy_from_user(dst_ptr, src_ptr, copy_bytes) != 0) {
           /* Page fault or invalid access: abort blit */
           spin_unlock_irqrestore(&compositor_lock, flags);
           return;

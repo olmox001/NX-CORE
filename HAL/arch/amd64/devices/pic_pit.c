@@ -88,8 +88,8 @@ void pic_mask(uint8_t irq);
  * IRQ context: safe on single-core.
  */
 static void pic_chip_enable(uint32_t irq) {
-    if (irq >= 32 && irq < 48) {
-        pic_unmask(irq - 32);
+    if (irq >= UINT32_C(32) && irq < UINT32_C(48)) {
+        pic_unmask((uint8_t)(irq - UINT32_C(32)));
     }
 }
 
@@ -106,15 +106,18 @@ static void pic_chip_enable(uint32_t irq) {
  * IRQ context: safe.
  */
 void pic_mask(uint8_t irq) {
+    if (irq >= UINT8_C(16))
+        return;
     uint16_t port;
-    uint8_t value;
-    if (irq < 8) {
+    uint8_t line = irq;
+    if (line < UINT8_C(8)) {
         port = PIC1_DATA;
     } else {
         port = PIC2_DATA;
-        irq -= 8;
+        line = (uint8_t)(line - UINT8_C(8));
     }
-    value = hal_read8(port) | (1 << irq);
+    uint8_t bit = (uint8_t)(UINT8_C(1) << line);
+    uint8_t value = (uint8_t)(hal_read8(port) | bit);
     hal_write8(port, value);
 }
 
@@ -130,8 +133,8 @@ void pic_mask(uint8_t irq) {
  * IRQ context: safe.
  */
 static void pic_chip_disable(uint32_t irq) {
-    if (irq >= 32 && irq < 48) {
-        pic_mask(irq - 32);
+    if (irq >= UINT32_C(32) && irq < UINT32_C(48)) {
+        pic_mask((uint8_t)(irq - UINT32_C(32)));
     }
 }
 
@@ -169,8 +172,8 @@ static uint32_t pic_chip_acknowledge(void) {
  */
 static void pic_chip_end(uint32_t irq) {
     lapic_eoi();
-    if (irq >= 32 && irq < 48) {
-        pic_send_eoi(irq - 32);
+    if (irq >= UINT32_C(32) && irq < UINT32_C(48)) {
+        pic_send_eoi((uint8_t)(irq - UINT32_C(32)));
     }
 }
 
@@ -413,17 +416,20 @@ int pic_handle_spurious(uint32_t vec) {
  * IRQ context: safe (no sleeping).
  */
 void pic_unmask(uint8_t irq) {
+    if (irq >= UINT8_C(16))
+        return;
     uint16_t port;
-    uint8_t value;
+    uint8_t line = irq;
 
-    if(irq < 8) {
+    if (line < UINT8_C(8)) {
         port = PIC1_DATA;
     } else {
         port = PIC2_DATA;
-        irq -= 8;
+        line = (uint8_t)(line - UINT8_C(8));
     }
-    nxhal_diag_info("PIC: Unmasking IRQ %u\n", irq);
-    value = hal_read8(port) & ~(1 << irq);
+    nxhal_diag_info("PIC: Unmasking IRQ %u\n", (unsigned)irq);
+    uint8_t bit = (uint8_t)(UINT8_C(1) << line);
+    uint8_t value = (uint8_t)(hal_read8(port) & (uint8_t)~bit);
     hal_write8(port, value);
 }
 

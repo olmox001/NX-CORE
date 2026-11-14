@@ -229,12 +229,17 @@ void arch_platform_early_init(void) {
       if (tag->type == MB2_TAG_TYPE_MMAP) {
         struct mb2_tag_mmap *mmap = (struct mb2_tag_mmap *)tag;
         uint32_t entry_size = mmap->entry_size;
-        uint32_t num_entries =
-            (mmap->size - sizeof(struct mb2_tag_mmap)) / entry_size;
-        for (uint32_t i = 0; i < num_entries && arch_region_count < ARCH_MAX_MEM_REGIONS; i++) {
+        if (entry_size < sizeof(struct mb2_mmap_entry) ||
+            mmap->size < sizeof(struct mb2_tag_mmap))
+          break;
+        size_t payload_size =
+            (size_t)mmap->size - sizeof(struct mb2_tag_mmap);
+        size_t num_entries = payload_size / (size_t)entry_size;
+        for (size_t i = 0U;
+             i < num_entries && arch_region_count < ARCH_MAX_MEM_REGIONS; ++i) {
           struct mb2_mmap_entry *entry =
               (struct mb2_mmap_entry *)((uint8_t *)mmap->entries +
-                                        i * entry_size);
+                                        i * (size_t)entry_size);
           arch_mem_regions[arch_region_count].base = entry->addr;
           arch_mem_regions[arch_region_count].size = entry->len;
           arch_mem_regions[arch_region_count].type =
@@ -242,7 +247,12 @@ void arch_platform_early_init(void) {
           arch_region_count++;
         }
       }
-      tag = (struct mb2_tag *)((uint8_t *)tag + ((tag->size + 7) & ~7));
+      if (tag->size < sizeof(struct mb2_tag) ||
+          tag->size > UINT32_MAX - UINT32_C(7))
+        break;
+      uint32_t aligned_tag_size =
+          (tag->size + UINT32_C(7)) & ~UINT32_C(7);
+      tag = (struct mb2_tag *)((uint8_t *)tag + aligned_tag_size);
     }
   } else if (mb_magic == PVH_MAGIC ||
              (mb_info_ptr &&
@@ -481,8 +491,9 @@ extern void secondary_cpu_entry(void);
  */
 int arch_impl_smp_wake_secondary(uint64_t cpu_id, void *stack) {
 
-  if (cpu_id >= MAX_CPUS)
+  if (cpu_id >= MAX_CPUS || cpu_id > UINT32_MAX)
     return -1;
+  uint32_t lapic_id = (uint32_t)cpu_id;
 
   /* 1. Copy trampoline to TRAMPOLINE_BASE (physical address 0x1000).
    * The low 1 MB is identity-mapped (RW) by arch_vmm_init_hw.  This also
@@ -490,7 +501,13 @@ int arch_impl_smp_wake_secondary(uint64_t cpu_id, void *stack) {
    * FIX(BOOT-03) above: every AP's bring-up starts with a freshly-cleared
    * re-entrancy guard without this function touching the flag by hand. */
   uint8_t *dest = (uint8_t *)TRAMPOLINE_BASE;
-  size_t size = trampoline_end - trampoline_start;
+  uintptr_t trampoline_begin = (uintptr_t)&trampoline_start[0];
+  uintptr_t trampoline_limit = (uintptr_t)&trampoline_end[0];
+  if (trampoline_limit < trampoline_begin)
+    return -1;
+  size_t size = (size_t)(trampoline_limit - trampoline_begin);
+  if (size == 0U || size > PAGE_SIZE)
+    return -1;
   memcpy(dest, trampoline_start, size);
 
   /* 2. Patch trampoline parameters at their relocated addresses.
@@ -524,7 +541,7 @@ int arch_impl_smp_wake_secondary(uint64_t cpu_id, void *stack) {
    * hard on some boots" symptom this driver has been asked to rule out. */
   __asm__ __volatile__("mfence" ::: "memory");
 
-  if (lapic_send_ipi(cpu_id, ICR_INIT | ICR_ASSERT | ICR_LEVEL |
+  if (lapic_send_ipi(lapic_id, ICR_INIT | ICR_ASSERT | ICR_LEVEL |
                               ICR_PHYSICAL) != 0)
     return -1;
 
@@ -532,7 +549,7 @@ int arch_impl_smp_wake_secondary(uint64_t cpu_id, void *stack) {
   udelay(10000);
 
   /* 5. STARTUP IPI #1: vector 0x01 → AP starts at physical 0x1000. */
-  if (lapic_send_ipi(cpu_id, ICR_STARTUP | UINT32_C(0x01) |
+  if (lapic_send_ipi(lapic_id, ICR_STARTUP | UINT32_C(0x01) |
                               ICR_PHYSICAL) != 0)
     return -1;
 
@@ -542,7 +559,7 @@ int arch_impl_smp_wake_secondary(uint64_t cpu_id, void *stack) {
   /* 7. STARTUP IPI #2 — SDM retry against a lost/coalesced first SIPI.
    * Safe: trampoline_busy (trampoline.S) makes a second SIPI that lands
    * mid-flight spin instead of re-entering the 16→32→64 transition. */
-  if (lapic_send_ipi(cpu_id, ICR_STARTUP | UINT32_C(0x01) |
+  if (lapic_send_ipi(lapic_id, ICR_STARTUP | UINT32_C(0x01) |
                               ICR_PHYSICAL) != 0)
     return -1;
 

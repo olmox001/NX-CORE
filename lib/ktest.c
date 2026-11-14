@@ -62,13 +62,20 @@ volatile int ktest_test_failed = 0;
  * Side effects: writes to UART via printk; calls all registered test functions.
  */
 void ktest_run_all(void) {
-    size_t count = __ktests_end - __ktests_start;
-    size_t passed = 0;
-    size_t failed = 0;
+    ktest_case_t *start = &__ktests_start[0];
+    ktest_case_t *end = &__ktests_end[0];
+    if (end < start) {
+        printk("%s", "[KTEST] invalid linker section bounds\n");
+        return;
+    }
+    size_t count = (size_t)(end - start);
+    size_t passed = 0U;
+    size_t failed = 0U;
 
-    printk("\n[KTEST] Starting Kernel Unit Tests (%d cases found)...\n", (int)count);
+    printk("\n[KTEST] Starting Kernel Unit Tests (%lu cases found)...\n",
+           (unsigned long)count);
 
-    for (ktest_case_t *test = __ktests_start; test < __ktests_end; test++) {
+    for (ktest_case_t *test = start; test < end; ++test) {
         /* Defense against linker padding slots: a descriptor with a NULL
          * name/func is not a test — calling it is a jump into rodata (the
          * W^X #PF UTM/QEMU caught when .ktests started 8-byte-misaligned).
@@ -99,6 +106,6 @@ void ktest_run_all(void) {
         }
     }
 
-    printk("[KTEST] Completed. Summary: %d PASSED, %d FAILED\n\n",
-           (int)passed, (int)failed);
+    printk("[KTEST] Completed. Summary: %lu PASSED, %lu FAILED\n\n",
+           (unsigned long)passed, (unsigned long)failed);
 }

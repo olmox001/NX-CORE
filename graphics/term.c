@@ -33,6 +33,17 @@ static void term_fill_rect(struct gl_surface *surf, int x, int y, int w, int h,
   }
 }
 
+static int term_grid_cells(int cols, int rows, size_t *cells_out) {
+  if (!cells_out || cols <= 0 || rows <= 0)
+    return -1;
+  size_t cols_sz = (size_t)cols;
+  size_t rows_sz = (size_t)rows;
+  if (cols_sz > (size_t)-1 / rows_sz)
+    return -1;
+  *cells_out = cols_sz * rows_sz;
+  return 0;
+}
+
 /* xterm 256-colour palette → ARGB (16 base + 6x6x6 cube + 24 grays). */
 static uint32_t term_xterm256(int n) {
   static const uint32_t base16[16] = {
@@ -169,9 +180,10 @@ static void term_erase_caret(struct terminal *t, struct gl_surface *surf,
   term_fill_rect(surf, px * char_w, py * char_h, char_w, char_h, t->bg_color);
   if (t->text_grid && t->attr_grid) {
     int idx = py * t->cols + px;
-    char ch = (char)t->text_grid[idx];
-    if (ch >= 32 && ch < 127)
-      gl_draw_char(surf, px * char_w, py * char_h, ch, t->attr_grid[idx]);
+    uint8_t ch = t->text_grid[idx];
+    if (ch >= UINT8_C(32) && ch < UINT8_C(127))
+      gl_draw_char(surf, px * char_w, py * char_h, (uint32_t)ch,
+                   t->attr_grid[idx]);
   }
 }
 
@@ -252,9 +264,12 @@ static void handle_csi(struct terminal *t, struct gl_surface *surf, char final,
   } else if (final == 'J') {
     term_fill_rect(surf, 0, 0, surf->width, surf->height, t->curr_bg_color);
     if (t->text_grid && t->attr_grid) {
-      memset(t->text_grid, ' ', t->cols * t->rows);
-      for (int p = 0; p < t->cols * t->rows; p++)
-        t->attr_grid[p] = t->curr_bg_color;
+      size_t cells = 0U;
+      if (term_grid_cells(t->cols, t->rows, &cells) == 0) {
+        memset(t->text_grid, ' ', cells);
+        for (size_t p = 0U; p < cells; ++p)
+          t->attr_grid[p] = t->curr_bg_color;
+      }
     }
     t->cursor_x = 0;
     t->cursor_y = 0;
@@ -346,9 +361,12 @@ int term_init(struct terminal *t, int cols, int rows, uint32_t fg,
   t->escape_state = 0;
   t->escape_len = 0;
 
-  size_t cells = (size_t)cols * rows;
+  size_t cells = 0U;
+  if (term_grid_cells(cols, rows, &cells) != 0 ||
+      cells > (size_t)-1 / sizeof(uint32_t))
+    return -1;
   t->text_grid = (uint8_t *)kmalloc(cells);
-  t->attr_grid = (uint32_t *)kmalloc(cells * 4);
+  t->attr_grid = (uint32_t *)kmalloc(cells * sizeof(uint32_t));
   if (!t->text_grid || !t->attr_grid) {
     term_free(t);
     return -1;
@@ -375,8 +393,13 @@ int term_resize(struct terminal *t, int cols, int rows) {
     cols = 1;
   if (rows < 1)
     rows = 1;
-  uint8_t *ntext = (uint8_t *)kmalloc((size_t)cols * rows);
-  uint32_t *nattr = (uint32_t *)kmalloc((size_t)cols * rows * 4);
+  size_t cells = 0U;
+  if (term_grid_cells(cols, rows, &cells) != 0 ||
+      cells > (size_t)-1 / sizeof(uint32_t))
+    return -1;
+  uint8_t *ntext = (uint8_t *)kmalloc(cells);
+  uint32_t *nattr =
+      (uint32_t *)kmalloc(cells * sizeof(uint32_t));
   if (!ntext || !nattr) {
     if (ntext)
       kfree(ntext);
@@ -385,8 +408,8 @@ int term_resize(struct terminal *t, int cols, int rows) {
     return -1;
   }
   /* Fresh grids cleared to defaults; pixel reflow is the caller's concern. */
-  memset(ntext, ' ', (size_t)cols * rows);
-  for (size_t i = 0; i < (size_t)cols * rows; i++)
+  memset(ntext, ' ', cells);
+  for (size_t i = 0U; i < cells; ++i)
     nattr[i] = t->default_fg;
   term_free(t);
   t->text_grid = ntext;
@@ -410,8 +433,25 @@ void term_write(struct terminal *t, struct gl_surface *surf, const char *buf,
   int char_h = graphics_font_height();
   int cols = t->cols;
   int rows = t->rows;
+  if (char_w <= 0 || char_h <= 0 || cols <= 0 || rows <= 0 ||
+      surf->stride <= 0 || surf->height <= 0)
+    return;
 
-  for (size_t i = 0; i < count; i++) {
+  size_t stride = (size_t)surf->stride;
+  size_t height = (size_t)surf->height;
+  size_t char_h_sz = (size_t)char_h;
+  if (stride > (size_t)-1 / height)
+    return;
+  size_t surface_pixels = stride * height;
+  if (surface_pixels > (size_t)-1 / sizeof(uint32_t))
+    return;
+
+  size_t grid_cells = 0U;
+  if (term_grid_cells(cols, rows, &grid_cells) != 0 ||
+      grid_cells > (size_t)-1 / sizeof(uint32_t))
+    return;
+
+  for (size_t i = 0U; i < count; ++i) {
     char c = buf[i];
 
     if (t->escape_state == 0) {
@@ -438,25 +478,29 @@ void term_write(struct terminal *t, struct gl_surface *surf, const char *buf,
         }
         if (t->cursor_y >= rows) {
           /* Scroll pixel buffer up by one text line */
-          if (surf->height > char_h) {
-            size_t line_size = (size_t)surf->stride * char_h;
-            memmove(surf->buffer, surf->buffer + line_size,
-                    (size_t)surf->stride * (surf->height - char_h) * 4);
+          size_t scroll_start = 0U;
+          if (height > char_h_sz) {
+            size_t scroll_rows = height - char_h_sz;
+            size_t line_pixels = stride * char_h_sz;
+            size_t scroll_pixels = stride * scroll_rows;
+            memmove(surf->buffer, surf->buffer + line_pixels,
+                    scroll_pixels * sizeof(uint32_t));
+            scroll_start = scroll_pixels;
           }
-          /* Clear the freed last line */
-          for (size_t p = (size_t)surf->stride * (surf->height - char_h);
-               p < (size_t)surf->stride * surf->height; p++) {
+          /* Clear the freed last line. */
+          for (size_t p = scroll_start; p < surface_pixels; ++p)
             surf->buffer[p] = t->bg_color;
-          }
 
-          /* Scroll text grids */
+          /* Scroll text grids. */
           if (t->text_grid && t->attr_grid) {
-            memmove(t->text_grid, t->text_grid + cols, (size_t)cols * (rows - 1));
-            memmove(t->attr_grid, t->attr_grid + cols,
-                    (size_t)cols * (rows - 1) * 4);
-            int last_row_start = cols * (rows - 1);
-            memset(t->text_grid + last_row_start, ' ', cols);
-            for (int p = 0; p < cols; p++)
+            size_t row_cells = (size_t)cols;
+            size_t scroll_cells = grid_cells - row_cells;
+            memmove(t->text_grid, t->text_grid + row_cells, scroll_cells);
+            memmove(t->attr_grid, t->attr_grid + row_cells,
+                    scroll_cells * sizeof(uint32_t));
+            size_t last_row_start = scroll_cells;
+            memset(t->text_grid + last_row_start, ' ', row_cells);
+            for (size_t p = 0U; p < row_cells; ++p)
               t->attr_grid[last_row_start + p] = t->default_fg;
           }
           t->cursor_y = rows - 1;
@@ -467,13 +511,14 @@ void term_write(struct terminal *t, struct gl_surface *surf, const char *buf,
         uint32_t glyph_bg = t->reverse ? t->fg_color : t->curr_bg_color;
         term_fill_rect(surf, t->cursor_x * char_w, t->cursor_y * char_h, char_w,
                        char_h, glyph_bg);
-        gl_draw_char(surf, t->cursor_x * char_w, t->cursor_y * char_h, c,
-                     glyph_fg);
+        uint8_t glyph = (uint8_t)c;
+        gl_draw_char(surf, t->cursor_x * char_w, t->cursor_y * char_h,
+                     (uint32_t)glyph, glyph_fg);
 
         if (t->text_grid && t->attr_grid) {
           int idx = t->cursor_y * cols + t->cursor_x;
           if (idx < cols * rows) {
-            t->text_grid[idx] = c;
+            t->text_grid[idx] = glyph;
             t->attr_grid[idx] = glyph_fg;
           }
         }

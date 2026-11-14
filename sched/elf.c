@@ -90,9 +90,14 @@ int process_load_elf_args(struct process *proc, const char *path, int argc,
 
   /* 3. Load Segments */
   uint64_t max_vaddr = 0;
-  for (int i = 0; i < ehdr.e_phnum; i++) {
+  for (uint16_t i = 0U; i < ehdr.e_phnum; ++i) {
     Elf64_Phdr phdr;
-    uint32_t ph_off = ehdr.e_phoff + (i * ehdr.e_phentsize);
+    uint64_t ph_stride = (uint64_t)i * (uint64_t)ehdr.e_phentsize;
+    if (ehdr.e_phoff > UINT64_MAX - ph_stride) {
+      pr_err("ELF: PHDR offset overflow at index %u\n", (unsigned)i);
+      return -1;
+    }
+    uint64_t ph_off = ehdr.e_phoff + ph_stride;
 
     if (vfs_read(&exe, ph_off, &phdr, sizeof(phdr)) != sizeof(phdr)) {
       pr_err("ELF: Failed to read PHDR %d\n", i);
@@ -184,8 +189,13 @@ int process_load_elf_args(struct process *proc, const char *path, int argc,
            * it.  Loading a partially-read binary is worse than failing to load
            * one, because the failure surfaces as an illegal instruction in
            * userland with no link back to the read. */
+          if (copy_len > UINT32_MAX) {
+            pr_err("%s", "ELF: page copy length exceeds VFS read contract\n");
+            return -1;
+          }
+          uint32_t read_len = (uint32_t)copy_len;
           long rd = vfs_read(&exe, offset_in_file,
-                             (uint8_t *)kaddr + offset_in_page, copy_len);
+                             (uint8_t *)kaddr + offset_in_page, read_len);
           if (rd < 0 || (uint64_t)rd != copy_len) {
             pr_err("elf: short read loading segment (want %lu, got %ld) — "
                    "refusing to run a partially loaded image\n",

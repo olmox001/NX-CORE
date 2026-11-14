@@ -78,7 +78,10 @@ struct env_block {
 
 /* Process Control Block */
 struct process {
-  uint32_t pid;
+  /* Process IDs are positive signed ints throughout the public/kernel process,
+   * IPC and window contracts.  Keep the PCB on that canonical type; unsigned
+   * scheduler snapshots use their own explicit UINT32_MAX sentinel. */
+  int pid;
   char name[PROCESS_NAME_MAX];
 
   /* Memory */

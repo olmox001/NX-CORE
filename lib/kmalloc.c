@@ -173,7 +173,7 @@ static int get_bucket_index(size_t size) {
 
 /* get_bucket_size - return the total slot size (header + payload) for bucket idx.
  * Bucket 0 = 16 bytes, bucket 1 = 32 bytes, ..., bucket 8 = 4096 bytes. */
-static size_t get_bucket_size(int idx) { return 16 << idx; }
+static size_t get_bucket_size(uint32_t idx) { return (size_t)16U << idx; }
 
 /*
  * Initialize kernel heap
@@ -267,6 +267,11 @@ void *kmalloc(size_t size) {
   if (size == 0)
     return NULL;
 
+  /* block_header stores the requested size in its fixed-width on-disk-style
+   * metadata field. Reject values that cannot be represented instead of
+   * truncating them and later freeing the wrong PMM span. */
+  if (size > UINT32_MAX)
+    return NULL;
   if (size > (size_t)(-1) - sizeof(struct block_header))
     return NULL;
 
@@ -280,7 +285,8 @@ void *kmalloc(size_t size) {
 
   if (idx >= 0) {
     /* Small allocation from bucket */
-    size_t bucket_sz = get_bucket_size(idx);
+    uint32_t bucket_idx = (uint32_t)idx;
+    size_t bucket_sz = get_bucket_size(bucket_idx);
 
     for (;;) {
       /* Check free list for this bucket */
@@ -288,9 +294,9 @@ void *kmalloc(size_t size) {
         struct block_header *blk = buckets[idx];
         buckets[idx] = blk->next;
         blk->magic = BLOCK_MAGIC;
-        blk->size = size;
+        blk->size = (uint32_t)size;
         blk->next = NULL;
-        blk->bucket_idx = idx;
+        blk->bucket_idx = bucket_idx;
 
         res = (void *)(blk + 1);
         goto out;
@@ -302,9 +308,9 @@ void *kmalloc(size_t size) {
         heap_ptr += bucket_sz;
 
         blk->magic = BLOCK_MAGIC;
-        blk->size = size;
+        blk->size = (uint32_t)size;
         blk->next = NULL;
-        blk->bucket_idx = idx;
+        blk->bucket_idx = bucket_idx;
 
         res = (void *)(blk + 1);
         goto out;
@@ -357,9 +363,9 @@ void *kmalloc(size_t size) {
 
     struct block_header *blk = (struct block_header *)ptr;
     blk->magic = BLOCK_MAGIC;
-    blk->size = size;
+    blk->size = (uint32_t)size;
     blk->next = NULL;
-    blk->bucket_idx = 0xFFFFFFFF; // Mark as large
+    blk->bucket_idx = UINT32_MAX; // Mark as large
 
     km_stat_alloc(size); /* perf brief §1: account live bytes (large path) */
     return (void *)(blk + 1);

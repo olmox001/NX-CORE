@@ -62,6 +62,11 @@ KTEST_CASE(test_string_length) {
     KASSERT_EQ(strlen(""), 0);
 }
 
+KTEST_CASE(test_string_bounded_length) {
+    KASSERT_EQ(strnlen("hello", 3U), 3U);
+    KASSERT_EQ(strnlen("hi", 8U), 2U);
+}
+
 /* test_string_compare - verify strcmp() equality and inequality paths.
  * strcmp("abc","abc") must return 0; strcmp("abc","abd") must be non-zero. */
 KTEST_CASE(test_string_compare) {

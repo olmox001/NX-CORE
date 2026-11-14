@@ -149,8 +149,9 @@ void idt_init(void) {
       memset(&idt, 0, sizeof(struct idt_entry) * IDT_ENTRIES);
 
       /* Set up IDT gates: all 256 as kernel-only interrupt gates (0x8E) */
-      for (int i = 0; i < IDT_ENTRIES; i++) {
-        idt_set_gate(i, isr_stub_table[i], 0x08, 0x8E, 0);
+      for (uint16_t i = 0U; i < IDT_ENTRIES; ++i) {
+        idt_set_gate((uint8_t)i, isr_stub_table[i], UINT16_C(0x08),
+                     UINT8_C(0x8E), 0U);
       }
 
       /* SYS-AMD64-03 (#168): vector 0x80 intentionally stays a kernel-only gate
@@ -327,6 +328,11 @@ static void amd64_double_fault_handler(struct pt_regs *regs) {
  */
 struct pt_regs *amd64_isr_dispatch(struct pt_regs *regs) {
   uint64_t vec = regs->vec;
+  if (vec > UINT8_MAX) {
+    nxhal_diag_error("AMD64: invalid IDT vector %lu in interrupt frame\n", vec);
+    return regs;
+  }
+  uint32_t irq = (uint32_t)vec;
 
   if (vec < 32) {
     /* Fault recursion guard (Phase A step 7): a fault inside a fault handler
@@ -407,12 +413,12 @@ struct pt_regs *amd64_isr_dispatch(struct pt_regs *regs) {
     } else {
         /* All other Hardware interrupts - route via generic system */
         nxhal_diag_debug("AMD64: Hardware Interrupt Vector %lu triggered!\n", vec);
-        ret_regs = nxhal_core_irq_dispatch(vec, regs);
+        ret_regs = nxhal_core_irq_dispatch(irq, regs);
     }
 
     /* End-of-interrupt through the chip (IRQ-01 fix): pic_chip_end() owns
      * the complete LAPIC + 8259 sequence; nothing here EOIs by hand. */
-    hal_irq_end((uint32_t)vec);
+    hal_irq_end(irq);
 
     return ret_regs;
   }

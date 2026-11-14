@@ -232,13 +232,32 @@ void gpt_init(void) {
   /* entries_crc: CRC32 of the raw entries array as stored in the header. */
   uint32_t entries_crc = header->partition_entry_crc32;
 
-  /* Calculate total size and pages needed */
-  /* Standard case: 128 entries × 128 bytes = 16 384 bytes = 32 sectors.
-   * sectors_to_read = ceil(total_entries_size / 512) using integer arithmetic.
-   * num_pages       = ceil(total_entries_size / PAGE_SIZE). */
-  uint32_t total_entries_size = num_entries * entry_size;
-  uint32_t num_pages = (total_entries_size + PAGE_SIZE - 1) / PAGE_SIZE;
-  uint32_t sectors_to_read = (total_entries_size + 511) / 512;
+  /* Calculate total size and pages needed without trusting 32-bit on-disk
+   * multiplication.  block_read() has a 32-bit sector count, while PMM and
+   * crc32 consume size_t lengths. */
+  if (entry_size == 0U || num_entries == 0U) {
+    pr_err("%s", "GPT: invalid zero entry size/count\n");
+    pmm_free_page(buf);
+    return;
+  }
+  uint64_t total64 = (uint64_t)num_entries * (uint64_t)entry_size;
+  if (total64 > (uint64_t)SIZE_MAX ||
+      total64 > (uint64_t)SIZE_MAX - ((uint64_t)PAGE_SIZE - 1U)) {
+    pr_err("%s", "GPT: partition entry array is too large\n");
+    pmm_free_page(buf);
+    return;
+  }
+  size_t total_entries_size = (size_t)total64;
+  size_t num_pages =
+      (total_entries_size + PAGE_SIZE - 1U) / PAGE_SIZE;
+  uint64_t sectors64 =
+      (total64 + UINT64_C(511)) / UINT64_C(512);
+  if (sectors64 == 0U || sectors64 > UINT32_MAX) {
+    pr_err("%s", "GPT: partition entry sector count is invalid\n");
+    pmm_free_page(buf);
+    return;
+  }
+  uint32_t sectors_to_read = (uint32_t)sectors64;
 
   /* Allocate buffer for all partition entries if needed */
   uint8_t *entries_buf = buf;
@@ -246,13 +265,26 @@ void gpt_init(void) {
     /* Allocate additional pages for partition entries */
     entries_buf = (uint8_t *)pmm_alloc_pages(num_pages);
     if (!entries_buf) {
-      /* NOTE(GPT-03): fallback: cap to 32 entries and reuse the single-page
-       * buf[4096].  32 × entry_size must be ≤ 4096, which holds only when
-       * entry_size ≤ 128.  Standard GPT uses entry_size == 128 exactly
-       * (32 × 128 = 4096), so the fallback is safe on standard images. */
-      pr_warn("GPT: Cannot allocate %u pages for entries, limiting to 32\n", num_pages);
-      total_entries_size = 32 * entry_size;
-      sectors_to_read = (total_entries_size + 511) / 512;
+      /* Fall back to the one-page buffer without assuming 128-byte GPT
+       * entries.  Parse and CRC only the bounded prefix that physically fits. */
+      size_t fallback_entries = PAGE_SIZE / (size_t)entry_size;
+      if (fallback_entries == 0U) {
+        pr_err("GPT: entry size %u exceeds one-page fallback\n", entry_size);
+        pmm_free_page(buf);
+        return;
+      }
+      if (fallback_entries > (size_t)num_entries)
+        fallback_entries = (size_t)num_entries;
+      pr_warn("GPT: Cannot allocate %lu pages; limiting to %lu entries\n",
+              (unsigned long)num_pages, (unsigned long)fallback_entries);
+      total_entries_size = fallback_entries * (size_t)entry_size;
+      sectors64 =
+          ((uint64_t)total_entries_size + UINT64_C(511)) / UINT64_C(512);
+      if (sectors64 == 0U || sectors64 > UINT32_MAX) {
+        pmm_free_page(buf);
+        return;
+      }
+      sectors_to_read = (uint32_t)sectors64;
       entries_buf = buf;
     }
   }
@@ -290,11 +322,11 @@ void gpt_init(void) {
   /* entries_to_read = actual number of slots in the buffer; may be less than
    * num_entries when the fallback capped total_entries_size to 32 × entry_size. */
   num_partitions = 0;
-  uint32_t entries_to_read = total_entries_size / entry_size;
+  size_t entries_to_read = total_entries_size / (size_t)entry_size;
 
-  for (uint32_t i = 0; i < entries_to_read; i++) {
+  for (size_t i = 0U; i < entries_to_read; ++i) {
     struct gpt_partition_entry *entry =
-        (struct gpt_partition_entry *)(entries_buf + i * entry_size);
+        (struct gpt_partition_entry *)(entries_buf + i * (size_t)entry_size);
 
     /* Check if entry is used (Type GUID != 0) */
     /* GPT spec: an all-zero type_guid marks an unused partition slot;
@@ -326,8 +358,8 @@ void gpt_init(void) {
     p->size_sectors = entry->end_lba - entry->start_lba + 1;
     memcpy(p->type_guid, entry->type_guid, 16);
 
-    pr_info("GPT: Partition %d: Start=%ld, Size=%ld sectors\n", i, p->start_lba,
-            p->size_sectors);
+    pr_info("GPT: Partition %lu: Start=%ld, Size=%ld sectors\n",
+            (unsigned long)i, p->start_lba, p->size_sectors);
 
     num_partitions++;
   }

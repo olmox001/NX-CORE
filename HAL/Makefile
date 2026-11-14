@@ -39,22 +39,12 @@ COMMON_FLAGS := -Wall -Wextra -Wpedantic -Wshadow -Wwrite-strings \
   -ffreestanding -fno-builtin \
   -nostdlib -nostartfiles -fno-common -fstack-protector-strong \
   -fno-pic -fno-pie -fno-omit-frame-pointer -O2 -g -DNX_STRICT
-# Fatal by default for the baseline correctness/hardening warning classes.
-# Conversion diagnostics remain visible in every build while each narrowing
-# site is proved and repaired. No -Wno-error or warning suppressions.
-# NX_WARNINGS_AS_ERRORS=0 explicitly opts out of fatal baseline warnings;
-# NX_CONVERSION_AS_ERROR=1 makes the conversion migration fail-fast as well.
+# HAL diagnostics are blocking by default under the same single switch used
+# by NX-CORE.  Every enabled warning, including conversion/sign-conversion,
+# is fatal; assembler warnings are fatal too.  No -Wno-error demotions.
 NX_WARNINGS_AS_ERRORS ?= 1
-NX_CONVERSION_AS_ERROR ?= 0
 ifeq ($(NX_WARNINGS_AS_ERRORS),1)
-COMMON_FLAGS += -Werror=all -Werror=extra -Werror=pedantic \
-  -Werror=shadow -Werror=write-strings -Werror=missing-prototypes \
-  -Werror=strict-prototypes -Werror=undef -Werror=format=2 -Werror=cast-align \
-  -Werror=pointer-arith -Werror=switch-enum -Werror=double-promotion \
-  -Werror=vla -Werror=missing-declarations
-endif
-ifeq ($(NX_CONVERSION_AS_ERROR),1)
-COMMON_FLAGS += -Werror=conversion -Werror=sign-conversion
+COMMON_FLAGS += -Werror -Wa,--fatal-warnings
 endif
 HAL_INCLUDE := -I$(HAL_ROOT) -I$(HAL_ROOT)/include -I$(KERNEL_ROOT)/include -I$(HAL_ROOT)/arch/$(ARCH)/include \
   -I$(KERNEL_ROOT)/include/abi -I$(KERNEL_ROOT)/include/api
@@ -102,7 +92,7 @@ test-static:
 	$(MAKE) -C tests test-static
 
 boundary: $(HAL_LIB)
-	@tools/audit-boundary.sh $(ARCH)
+	@tools/audit-boundary.sh $(ARCH) "$(BUILD_DIR)"
 
 require-sdk:
 	@$(KERNEL_ROOT)/tools/resolve-sdk.sh --check >/dev/null

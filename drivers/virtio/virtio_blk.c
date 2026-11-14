@@ -230,8 +230,8 @@ static int virtio_blk_xfer(int write, void *buf, uint64_t sector,
   uint16_t old_idx = *used_idx_ptr;
 
   /* Publish in the Available Ring */
-  uint16_t idx = avail->idx % virtio_blk_qsize;
-  avail->ring[idx] = 0;
+  uint32_t ring_slot = (uint32_t)avail->idx % virtio_blk_qsize;
+  avail->ring[ring_slot] = 0;
   avail->idx++;
 
   /* FIX(VBLK-DMA-02): the device DMA-reads blk_req, desc[] and avail — all

@@ -141,7 +141,7 @@ struct usb_device {
     uint8_t  addr;            /* USB address (1..127), HCD-assigned */
     uint8_t  speed;
     int      port;            /* root-hub port index (for root devices) */
-    uint8_t  max_packet0;     /* EP0 max packet */
+    uint16_t max_packet0;     /* EP0 max packet, including USB3 512-byte EP0 */
     uint16_t vendor, product;
     uint8_t  dev_class, dev_subclass, dev_protocol;
     void    *hcd_priv;        /* HCD per-device state (xHCI slot, etc.) */
@@ -157,11 +157,11 @@ struct usb_device {
     /* HID interface of interest (filled by usb_hid bind) */
     int      hid_iface;
     uint8_t  hid_ep_in;       /* endpoint address (with 0x80 IN bit) */
-    int      hid_ep_max;      /* wMaxPacketSize of that endpoint */
+    uint16_t hid_ep_max;      /* endpoint wMaxPacketSize payload */
     uint8_t  hid_interval;
     uint8_t  hid_protocol;    /* HID_PROTOCOL_KEYBOARD / _MOUSE (boot) */
     int      hid_use_report;  /* 1 = report-protocol HID (non-boot, e.g. tablet) */
-    int      hid_report_len;  /* report-descriptor length (HID desc wDescriptorLength) */
+    uint16_t hid_report_len;  /* report-descriptor wDescriptorLength */
     /* Absolute pointer, parsed from the HID report descriptor (USB tablet). */
     int      hid_is_abs;      /* 1 = reports absolute X/Y */
     uint16_t hid_abs_x_off;   /* bit offset of X within the input report */

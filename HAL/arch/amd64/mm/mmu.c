@@ -78,20 +78,21 @@
 /* ── Page Table Entry Flag Bits (Intel SDM Vol.3, Table 4-20) ──────────────
  * These apply to all four levels (PML4E, PDPTE, PDE, PTE) where relevant.
  * ─────────────────────────────────────────────────────────────────────────*/
-#define X86_PTE_P 0x001         /* Present: entry is valid */
-#define X86_PTE_RW 0x002        /* Read/Write: 0=read-only, 1=writable */
-#define X86_PTE_US 0x004        /* User/Supervisor: 1=user-accessible */
-#define X86_PTE_PWT 0x008       /* Page-level write-through cache policy */
-#define X86_PTE_PCD 0x010       /* Page-level cache disable */
-#define X86_PTE_A 0x020         /* Accessed: set by CPU on any access */
-#define X86_PTE_D 0x040         /* Dirty: set by CPU on write */
-#define X86_PTE_PAT 0x080       /* Page Attribute Table index bit */
-#define X86_PTE_G 0x100         /* Global: don't flush from TLB on CR3 write */
-#define X86_PTE_NX (1ULL << 63) /* No-Execute (requires IA32_EFER.NXE=1) */
+#define X86_PTE_P UINT64_C(0x001)         /* Present: entry is valid */
+#define X86_PTE_RW UINT64_C(0x002)        /* Read/Write: 0=read-only, 1=writable */
+#define X86_PTE_US UINT64_C(0x004)        /* User/Supervisor: 1=user-accessible */
+#define X86_PTE_PWT UINT64_C(0x008)       /* Page-level write-through cache policy */
+#define X86_PTE_PCD UINT64_C(0x010)       /* Page-level cache disable */
+#define X86_PTE_A UINT64_C(0x020)         /* Accessed: set by CPU on any access */
+#define X86_PTE_D UINT64_C(0x040)         /* Dirty: set by CPU on write */
+#define X86_PTE_PAT UINT64_C(0x080)       /* Page Attribute Table index bit */
+#define X86_PTE_PS UINT64_C(0x080)        /* Large-page selector in PDPTE/PDE */
+#define X86_PTE_G UINT64_C(0x100)         /* Global: don't flush from TLB on CR3 write */
+#define X86_PTE_NX (UINT64_C(1) << 63) /* No-Execute (requires IA32_EFER.NXE=1) */
 
 /* PTE_ADDR_MASK: extract the 40-bit physical page-frame address from a PTE.
  * Bits [11:0] are flags; bits [63:52] are reserved/NX; bits [51:12] are PA. */
-#define PTE_ADDR_MASK 0x000FFFFFFFFFF000ULL
+#define PTE_ADDR_MASK UINT64_C(0x000FFFFFFFFFF000)
 
 /* Virtual address index extractors for each paging level.
  * PML4: VA[47:39] (9 bits) → one of 512 PML4 entries → covers 512 GB each.
@@ -334,7 +335,7 @@ static uint64_t *get_next_table(uint64_t *table, uint64_t index, int alloc,
 
   if (entry & X86_PTE_P) {
     /* Check for 2MB/1GB block (PS bit = bit 7) */
-    if (entry & 0x080) {
+    if (entry & X86_PTE_PS) {
       if (!alloc)
         return NULL;
 
@@ -358,7 +359,7 @@ static uint64_t *get_next_table(uint64_t *table, uint64_t index, int alloc,
         /* 2MB Block → 512 × 4KB pages (clear PS bit: leaf PTEs have no PS) */
         for (int i = 0; i < 512; i++) {
           sub_table[i] =
-              (block_pa + (uint64_t)i * 4096) | (block_flags & ~0x080);
+              (block_pa + (uint64_t)i * 4096) | (block_flags & ~X86_PTE_PS);
         }
       }
 
@@ -533,14 +534,14 @@ uint64_t arch_vmm_get_physical(uint64_t pgd, uint64_t va) {
   uint64_t pdpte = pdpt[PDPT_INDEX(va)];
   if (!(pdpte & X86_PTE_P))
     return 0;
-  if (pdpte & 0x080) /* 1GB page */
+  if (pdpte & X86_PTE_PS) /* 1GB page */
     return ((pdpte & PTE_ADDR_MASK) & ~0x3FFFFFFFULL) | (va & 0x3FFFFFFFULL);
   uint64_t *pd = (uint64_t *)phys_to_virt(pdpte & PTE_ADDR_MASK);
 
   uint64_t pde = pd[PD_INDEX(va)];
   if (!(pde & X86_PTE_P))
     return 0;
-  if (pde & 0x080) /* 2MB page */
+  if (pde & X86_PTE_PS) /* 2MB page */
     return ((pde & PTE_ADDR_MASK) & ~0x1FFFFFULL) | (va & 0x1FFFFFULL);
   uint64_t *pt = (uint64_t *)phys_to_virt(pde & PTE_ADDR_MASK);
 
@@ -659,7 +660,7 @@ int arch_vmm_protect(uint64_t pgd, uint64_t va, uint64_t size, uint64_t flags) {
       break;
     }
     uint64_t *pd;
-    if (pdpte & 0x080) {
+    if (pdpte & X86_PTE_PS) {
       pd = get_next_table(pdpt, PDPT_INDEX(v), 1, 1); /* split 1GB page */
       if (!pd) {
         rc = -1;
@@ -675,7 +676,7 @@ int arch_vmm_protect(uint64_t pgd, uint64_t va, uint64_t size, uint64_t flags) {
       break;
     }
     uint64_t *pt;
-    if (pde & 0x080) {
+    if (pde & X86_PTE_PS) {
       pt = get_next_table(pd, PD_INDEX(v), 1, 2); /* split 2MB page */
       if (!pt) {
         rc = -1;
@@ -737,7 +738,7 @@ int arch_vmm_map_range(uint64_t pgd, uint64_t va, uint64_t pa, uint64_t size,
 
       /* Level 2 2MB Page Mapping — same explicit translation as
        * arch_vmm_map (opt-in RW, NX from PTE_NX or UXN+PXN). */
-      uint64_t x86_flags = x86_leaf_flags(flags) | 0x080; /* PS bit for 2MB */
+      uint64_t x86_flags = x86_leaf_flags(flags) | X86_PTE_PS; /* PS bit for 2MB */
 
       pd[PD_INDEX(v)] = (p & PTE_ADDR_MASK) | x86_flags;
       v += 0x200000;

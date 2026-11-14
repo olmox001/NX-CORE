@@ -111,7 +111,11 @@ static struct region *region_scratch_reset(void) {
 static void region_copy_into(struct region *dst, const struct region *src) {
   if (dst->capacity < src->count) {
     int new_cap = src->count;
-    struct rect *nr = (struct rect *)kmalloc(sizeof(struct rect) * new_cap);
+    if (new_cap <= 0 || new_cap > MAX_RECTS_PER_REGION)
+      return;
+    size_t alloc_count = (size_t)new_cap;
+    struct rect *nr =
+        (struct rect *)kmalloc(sizeof(struct rect) * alloc_count);
     if (!nr)
       return; /* keep dst unchanged on OOM */
     if (dst->rects)
@@ -176,8 +180,9 @@ void region_add_rect(struct region *reg, int x, int y, int w, int h) {
     if (new_cap > MAX_RECTS_PER_REGION)
       new_cap = MAX_RECTS_PER_REGION;
 
+    size_t alloc_count = (size_t)new_cap;
     struct rect *new_rects =
-        (struct rect *)kmalloc(sizeof(struct rect) * new_cap);
+        (struct rect *)kmalloc(sizeof(struct rect) * alloc_count);
     if (new_rects) {
       for (int i = 0; i < reg->count; i++)
         new_rects[i] = reg->rects[i];

@@ -58,23 +58,14 @@ COMMON_FLAGS := -Wall -Wextra -Wpedantic -Wshadow -Wwrite-strings \
   -ffreestanding -fno-builtin \
   -nostdlib -nostartfiles -fno-common -fstack-protector-strong \
   -fno-pic -fno-pie -fno-omit-frame-pointer -O2 -g -DNX_STRICT
-# Keep all diagnostics active; opt into fatal warnings for qualification.
-# Fatal by default for the baseline correctness/hardening warning classes.
-# Conversion diagnostics remain visible in every build while each narrowing
-# site is proved and repaired. No -Wno-error or warning suppressions.
-# NX_WARNINGS_AS_ERRORS=0 explicitly opts out of fatal baseline warnings;
-# NX_CONVERSION_AS_ERROR=1 makes the conversion migration fail-fast as well.
+# Kernel/HAL diagnostics are blocking by default.  One explicit switch owns
+# the policy: every warning class already enabled above/below, including
+# conversion/sign-conversion, is fatal; assembler warnings are fatal as well.
+# NX_WARNINGS_AS_ERRORS=0 is reserved for deliberate local porting experiments.
+# Production/default builds must never add -Wno-error demotions.
 NX_WARNINGS_AS_ERRORS ?= 1
-NX_CONVERSION_AS_ERROR ?= 0
 ifeq ($(NX_WARNINGS_AS_ERRORS),1)
-COMMON_FLAGS += -Werror=all -Werror=extra -Werror=pedantic \
-  -Werror=shadow -Werror=write-strings -Werror=missing-prototypes \
-  -Werror=strict-prototypes -Werror=undef -Werror=format=2 -Werror=cast-align \
-  -Werror=pointer-arith -Werror=switch-enum -Werror=double-promotion \
-  -Werror=vla -Werror=missing-declarations
-endif
-ifeq ($(NX_CONVERSION_AS_ERROR),1)
-COMMON_FLAGS += -Werror=conversion -Werror=sign-conversion
+COMMON_FLAGS += -Werror -Wa,--fatal-warnings
 endif
 KERNEL_INCLUDE := -I$(HAL_ROOT) -I$(KERNEL_DIR)/include -I$(HAL_ROOT)/include -I$(HAL_ARCH_DIR)/include \
   -I$(KERNEL_DIR)/include/abi -I$(KERNEL_DIR)/include/api -I$(BUILD_DIR)/generated
@@ -111,9 +102,11 @@ KERNEL_ELF := $(BUILD_DIR)/kernel.elf
 KERNEL_BIN := $(BUILD_DIR)/kernel.bin
 BOOTLOADER_ELF := $(BUILD_DIR)/bootloader.elf
 BOOTLOADER_BIN := $(BUILD_DIR)/bootloader.bin
-LDFLAGS_BOOT := -nostdlib -static -z noexecstack -T $(BOOT_DIR)/linker.ld
-LDFLAGS_KERN := -nostdlib -static -z noexecstack -T $(HAL_ARCH_DIR)/kernel.ld \
-  -Map $(BUILD_DIR)/kernel.map
+FATAL_LINK_FLAGS := $(if $(filter 1,$(NX_WARNINGS_AS_ERRORS)),--fatal-warnings)
+LDFLAGS_BOOT := -nostdlib -static -z noexecstack $(FATAL_LINK_FLAGS) \
+  -T $(BOOT_DIR)/linker.ld
+LDFLAGS_KERN := -nostdlib -static -z noexecstack $(FATAL_LINK_FLAGS) \
+  -T $(HAL_ARCH_DIR)/kernel.ld -Map $(BUILD_DIR)/kernel.map
 
 include build.mk
 -include $(DEPS)

@@ -76,7 +76,9 @@ static int usb_parse_hid(struct usb_device *dev, const uint8_t *cfg, int len) {
             /* HID descriptor: capture the report-descriptor length so we request
              * exactly that many bytes — UHCI's control path can't tolerate an
              * over-sized IN request that the device ends with a short packet. */
-            dev->hid_report_len = cfg[i + 7] | (cfg[i + 8] << 8);
+            dev->hid_report_len =
+                (uint16_t)((uint16_t)cfg[i + 7] |
+                           ((uint16_t)cfg[i + 8] << 8U));
         } else if (btype == USB_DT_ENDPOINT && cur_is_hid && dev->hid_iface < 0 &&
                    blen >= sizeof(struct usb_endpoint_descriptor)) {
             const struct usb_endpoint_descriptor *ed =
@@ -86,7 +88,8 @@ static int usb_parse_hid(struct usb_device *dev, const uint8_t *cfg, int len) {
             if (is_in && is_intr) {
                 dev->hid_iface = cur_iface;
                 dev->hid_ep_in = ed->bEndpointAddress;
-                dev->hid_ep_max = ed->wMaxPacketSize & 0x7FF;
+                dev->hid_ep_max =
+                    (uint16_t)(ed->wMaxPacketSize & UINT16_C(0x07FF));
                 dev->hid_interval = ed->bInterval;
                 if (cur_is_boot)
                     dev->hid_protocol = cur_proto;  /* boot kbd/mouse */
@@ -207,13 +210,17 @@ static void usb_setup_device(struct usb_device *dev) {
         pr_warn("USB: config descriptor header read failed (r=%d)\n", r);
         return;
     }
-    const struct usb_config_descriptor *cd = (const struct usb_config_descriptor *)cfg;
-    int total = cd->wTotalLength;
-    if (total > (int)sizeof(cfg)) total = sizeof(cfg);
-    if (total > 9) {
+    const struct usb_config_descriptor *cd =
+        (const struct usb_config_descriptor *)cfg;
+    uint16_t total = cd->wTotalLength;
+    if ((size_t)total > sizeof(cfg))
+        total = (uint16_t)sizeof(cfg);
+    if (total > UINT16_C(9)) {
         r = usb_control(dev, USB_DIR_IN | USB_TYPE_STANDARD | USB_RECIP_DEVICE,
-                        USB_REQ_GET_DESCRIPTOR, (USB_DT_CONFIG << 8), 0, cfg, total);
-        if (r < total) total = (r > 0) ? r : 9;
+                        USB_REQ_GET_DESCRIPTOR, (USB_DT_CONFIG << 8), 0, cfg,
+                        total);
+        if (r < (int)total)
+            total = r > 0 ? (uint16_t)r : UINT16_C(9);
     }
     uint8_t cfg_value = cd->bConfigurationValue;
 
@@ -228,26 +235,33 @@ static void usb_setup_device(struct usb_device *dev) {
         return;
     }
 
-    if (!usb_parse_hid(dev, cfg, total)) {
+    if (!usb_parse_hid(dev, cfg, (int)total)) {
         return; /* not a HID interrupt device; ignored */
     }
+
+    if (dev->hid_iface < 0 || dev->hid_iface > (int)UINT16_MAX) {
+        pr_warn("USB: invalid HID interface index %d\n", dev->hid_iface);
+        return;
+    }
+    uint16_t hid_iface = (uint16_t)dev->hid_iface;
 
     if (dev->hid_use_report) {
         /* Report-protocol HID (e.g. a USB tablet): fetch + parse its report
          * descriptor to locate absolute X/Y, then run it in report protocol. */
         uint8_t rd[256];
         memset(rd, 0, sizeof(rd));
-        int want = dev->hid_report_len;
-        if (want <= 0 || want > (int)sizeof(rd)) want = sizeof(rd);
+        uint16_t want = dev->hid_report_len;
+        if (want == 0U || (size_t)want > sizeof(rd))
+            want = (uint16_t)sizeof(rd);
         int rl = usb_control(dev, USB_DIR_IN | USB_TYPE_STANDARD | USB_RECIP_INTERFACE,
                              USB_REQ_GET_DESCRIPTOR, (USB_DT_HID_REPORT << 8),
-                             dev->hid_iface, rd, want);
+                             hid_iface, rd, want);
         if (rl > 0)
             usb_hid_parse_report_desc(dev, rd, rl);
         usb_control(dev, USB_DIR_OUT | USB_TYPE_CLASS | USB_RECIP_INTERFACE,
-                    HID_REQ_SET_PROTOCOL, HID_PROTO_REPORT, dev->hid_iface, NULL, 0);
+                    HID_REQ_SET_PROTOCOL, HID_PROTO_REPORT, hid_iface, NULL, 0);
         usb_control(dev, USB_DIR_OUT | USB_TYPE_CLASS | USB_RECIP_INTERFACE,
-                    HID_REQ_SET_IDLE, 0, dev->hid_iface, NULL, 0);
+                    HID_REQ_SET_IDLE, 0, hid_iface, NULL, 0);
         if (!dev->hid_is_abs) {
             pr_info("USB: HID report iface %d is not an absolute pointer; ignored\n",
                     dev->hid_iface);
@@ -260,9 +274,9 @@ static void usb_setup_device(struct usb_device *dev) {
     } else {
         /* Boot protocol kbd/mouse: zero idle so reports only arrive on change. */
         usb_control(dev, USB_DIR_OUT | USB_TYPE_CLASS | USB_RECIP_INTERFACE,
-                    HID_REQ_SET_PROTOCOL, HID_PROTO_BOOT, dev->hid_iface, NULL, 0);
+                    HID_REQ_SET_PROTOCOL, HID_PROTO_BOOT, hid_iface, NULL, 0);
         usb_control(dev, USB_DIR_OUT | USB_TYPE_CLASS | USB_RECIP_INTERFACE,
-                    HID_REQ_SET_IDLE, 0, dev->hid_iface, NULL, 0);
+                    HID_REQ_SET_IDLE, 0, hid_iface, NULL, 0);
         pr_info("USB: HID %s on iface %d ep 0x%02x (max %d)\n",
                 dev->hid_protocol == HID_PROTOCOL_KEYBOARD ? "keyboard" : "mouse",
                 dev->hid_iface, dev->hid_ep_in, dev->hid_ep_max);
@@ -305,15 +319,15 @@ static void usb_hub_init(struct usb_device *hub) {
     int r = usb_control(hub, USB_DIR_IN | USB_TYPE_CLASS | USB_RECIP_DEVICE,
                         USB_REQ_GET_DESCRIPTOR, (USB_DT_HUB << 8), 0, hd, 9);
     if (r < 3) return;
-    int nports = hd[2];
-    pr_info("USB: hub on root port %d: %d downstream ports (tier %d)\n",
-            hub->root_port, nports, hub->tier);
+    uint8_t nports = hd[2];
+    pr_info("USB: hub on root port %d: %u downstream ports (tier %d)\n",
+            hub->root_port, (unsigned)nports, hub->tier);
 
-    for (int p = 1; p <= nports; p++)
+    for (uint16_t p = 1U; p <= (uint16_t)nports; ++p)
         hub_port_feature(hub, USB_REQ_SET_FEATURE, HUB_FEAT_PORT_POWER, p);
     for (volatile long s = 0; s < 4000000L; s++) { /* power-on settle */ }
 
-    for (int p = 1; p <= nports; p++) {
+    for (uint16_t p = 1U; p <= (uint16_t)nports; ++p) {
         uint16_t status = hub_port_status(hub, p);
         if (!(status & HUB_PORT_CONNECTION)) continue;
         hub_port_feature(hub, USB_REQ_CLEAR_FEATURE, HUB_FEAT_C_PORT_CONNECTION, p);
@@ -327,21 +341,28 @@ static void usb_hub_init(struct usb_device *hub) {
         hub_port_feature(hub, USB_REQ_CLEAR_FEATURE, HUB_FEAT_C_PORT_RESET, p);
         if (!(status & HUB_PORT_ENABLE)) continue;
 
-        int speed = (status & HUB_PORT_LOWSPEED)  ? USB_SPEED_LOW
-                  : (status & HUB_PORT_HIGHSPEED) ? USB_SPEED_HIGH
-                                                  : USB_SPEED_FULL;
+        uint8_t speed = USB_SPEED_FULL;
+        if ((status & HUB_PORT_LOWSPEED) != 0U)
+            speed = USB_SPEED_LOW;
+        else if ((status & HUB_PORT_HIGHSPEED) != 0U)
+            speed = USB_SPEED_HIGH;
 
         struct usb_device *child = usb_alloc_device();
         if (!child) return;
         child->hcd = hub->hcd;
         child->parent = hub;
-        child->hub_port = p;
+        child->hub_port = (uint8_t)p;
         child->root_port = hub->root_port;
-        child->tier = hub->tier + 1;
-        child->route = hub->route | ((uint32_t)(p & 0xF) << (4 * hub->tier));
+        child->tier = (uint8_t)((uint32_t)hub->tier + 1U);
+        child->route =
+            hub->route |
+            ((uint32_t)(p & UINT16_C(0xF)) << (4U * (uint32_t)hub->tier));
         child->speed = speed;
-        child->max_packet0 = (speed == USB_SPEED_LOW) ? 8
-                           : (speed == USB_SPEED_SUPER) ? 512 : 64;
+        child->max_packet0 = UINT16_C(64);
+        if (speed == USB_SPEED_LOW)
+            child->max_packet0 = UINT16_C(8);
+        else if (speed == USB_SPEED_SUPER)
+            child->max_packet0 = UINT16_C(512);
 
         if (hub->hcd->ops->address_dev(hub->hcd, child) < 0) {
             child->in_use = 0;
@@ -354,6 +375,11 @@ static void usb_hub_init(struct usb_device *hub) {
 void usb_register_hcd(struct usb_hcd *hcd) {
     if (!hcd || !hcd->ops) return;
     int nports = hcd->ops->num_ports ? hcd->ops->num_ports(hcd) : 0;
+    if (nports < 0 || nports > (int)UINT8_MAX) {
+        pr_err("USB: %s reported invalid root-port count %d\n",
+               hcd->name, nports);
+        return;
+    }
     pr_info("USB: %s registered, %d root ports\n", hcd->name, nports);
 
     /* Let the root ports settle before this one-shot scan: some emulated
@@ -380,10 +406,10 @@ void usb_register_hcd(struct usb_hcd *hcd) {
         }
         dev->hcd = hcd;
         dev->port = port;
-        dev->root_port = port + 1; /* 1-based for the xHCI slot context */
+        dev->root_port = (uint8_t)(port + 1); /* nports <= UINT8_MAX */
         dev->route = 0;            /* root device: empty route string */
         dev->tier = 0;
-        dev->max_packet0 = 8; /* default until descriptor read */
+        dev->max_packet0 = UINT16_C(8); /* default until descriptor read */
         if (hcd->ops->enumerate_port(hcd, port, dev) < 0) {
             dev->in_use = 0;
             continue;

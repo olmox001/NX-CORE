@@ -38,10 +38,10 @@
 size_t strlen(const char *s) {
   if (!s)
     return 0;
-  const char *p = s;
-  while (*p)
-    p++;
-  return p - s;
+  size_t length = 0U;
+  while (s[length] != '\0')
+    ++length;
+  return length;
 }
 
 /*
@@ -57,10 +57,10 @@ size_t strlen(const char *s) {
 size_t strnlen(const char *s, size_t maxlen) {
   if (!s)
     return 0;
-  const char *p = s;
-  while (maxlen-- && *p)
-    p++;
-  return p - s;
+  size_t length = 0U;
+  while (length < maxlen && s[length] != '\0')
+    ++length;
+  return length;
 }
 
 /*

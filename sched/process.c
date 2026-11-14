@@ -297,10 +297,14 @@ static void sched_trace_record(uint32_t cpu, struct cpu_info *cpu_ptr,
   entry->deferred_stack_low = sched_trace_stack_low(deferred);
   entry->deferred_stack_high = deferred ? deferred->kernel_stack : 0;
   entry->cpu = cpu;
-  entry->prev_pid = prev ? prev->pid : UINT32_MAX;
-  entry->next_pid = next ? next->pid : UINT32_MAX;
-  entry->pending_pid = pending ? pending->pid : UINT32_MAX;
-  entry->deferred_pid = deferred ? deferred->pid : UINT32_MAX;
+  entry->prev_pid =
+      (prev && prev->pid >= 0) ? (uint32_t)prev->pid : UINT32_MAX;
+  entry->next_pid =
+      (next && next->pid >= 0) ? (uint32_t)next->pid : UINT32_MAX;
+  entry->pending_pid =
+      (pending && pending->pid >= 0) ? (uint32_t)pending->pid : UINT32_MAX;
+  entry->deferred_pid =
+      (deferred && deferred->pid >= 0) ? (uint32_t)deferred->pid : UINT32_MAX;
   __atomic_store_n(&entry->seq, (uint64_t)ticket + 1u, __ATOMIC_RELEASE);
 }
 
@@ -1532,7 +1536,7 @@ void smp_create_idle_task(uint32_t cpu_id) {
   if (!idle)
     return;
 
-  idle->on_cpu = cpu_id;
+  idle->on_cpu = (int)cpu_id;
 
   struct cpu_info *info = &cpu_data[cpu_id];
   info->idle_task = idle;
@@ -2257,7 +2261,7 @@ void start_user_process(struct process *proc) {
   hal_isb();
 
   proc->state = PROC_RUNNING;
-  proc->on_cpu = cpu_id();
+  proc->on_cpu = (int)cpu_id();
   arch_enter_user_mode(proc->user_entry, proc->user_stack, proc->kernel_stack);
 }
 
@@ -2664,6 +2668,7 @@ hal_frame_t *schedule(hal_frame_t *regs) {
   __sched_reap_deferred(cpu_ptr);
 
   uint32_t cpu = cpu_ptr->cpu_id;
+  int cpu_index = (int)cpu;
   struct process *prev = cpu_ptr->current_task;
   int prev_reaped = 0;
 
@@ -2681,7 +2686,7 @@ hal_frame_t *schedule(hal_frame_t *regs) {
     prev_reaped = 1;
   }
 
-  struct process *next = __sched_pick_local(cpu_ptr, cpu, focus_pid);
+  struct process *next = __sched_pick_local(cpu_ptr, cpu_index, focus_pid);
 
   if (!next) {
     next = __sched_steal_work(cpu_ptr);
@@ -2723,7 +2728,7 @@ hal_frame_t *schedule(hal_frame_t *regs) {
       panic("SCHED: [CPU%d] BUG pc==0 on same-task return, PID %d", cpu,
             prev->pid);
     next->state = PROC_RUNNING;
-    next->on_cpu = cpu;
+    next->on_cpu = cpu_index;
     __sched_arm_quantum(next);
     spin_unlock_irqrestore(&cpu_ptr->sched_lock, flags);
     local_irq_restore(sched_irq_flags); /* SCHED-IRQ-01: no-switch exit */
@@ -2747,7 +2752,7 @@ hal_frame_t *schedule(hal_frame_t *regs) {
   if (cpu_ptr->migration_inflight == next)
     cpu_ptr->migration_inflight = NULL;
   next->state = PROC_RUNNING;
-  next->on_cpu = cpu;
+  next->on_cpu = cpu_index;
   __sched_arm_quantum(next);
 
   __sched_stack_alias_check(cpu, next);
@@ -3133,10 +3138,10 @@ long sys_getprocs(struct ps_info *user_buf, size_t max_count) {
   if (!k_buf)
     return -1;
 
-  int count = 0;
+  size_t count = 0U;
   uint64_t flags;
   spin_lock_irqsave(&sched_lock, &flags);
-  for (int i = 0; i < MAX_PROCESSES && (size_t)count < max_count; i++) {
+  for (int i = 0; i < MAX_PROCESSES && count < max_count; i++) {
     struct process *p = process_pool[i];
     if (!p)
       continue;
@@ -3155,7 +3160,7 @@ long sys_getprocs(struct ps_info *user_buf, size_t max_count) {
   int copied =
       vmm_copy_to_user(user_buf, k_buf, sizeof(struct ps_info) * count);
   kfree(k_buf);
-  return (copied != 0) ? -EFAULT : count;
+  return (copied != 0) ? -EFAULT : (long)count;
 }
 
 const char *proc_state_name(int state) {
@@ -3321,14 +3326,16 @@ long sys_sysstats(struct os1_sysstats *user_buf, size_t buf_size) {
 long sys_sbrk(intptr_t increment) {
   struct process *proc = current_process;
   uint64_t old_brk = proc->heap_end;
-  uint64_t new_brk = old_brk + increment;
+  uint64_t new_brk = old_brk;
 
   if (increment == 0)
     return (long)old_brk;
 
   if (increment > 0) {
-    if (new_brk < old_brk || new_brk > SBRK_HEAP_LIMIT)
-      return -ENOMEM; /* overflow, or past the guard below the stack */
+    uint64_t grow = (uint64_t)increment;
+    if (old_brk > SBRK_HEAP_LIMIT || grow > SBRK_HEAP_LIMIT - old_brk)
+      return -ENOMEM;
+    new_brk = old_brk + grow;
 
     uint64_t start_map = (old_brk + 4095) & ~(4095ULL);
     uint64_t end_map = (new_brk + 4095) & ~(4095ULL);
@@ -3346,8 +3353,14 @@ long sys_sbrk(intptr_t increment) {
       }
     }
   } else {
-    if (new_brk < proc->heap_start)
+    /* -(INTPTR_MIN) is not representable in intptr_t.  Form the magnitude
+     * without overflowing the signed domain, then prove the shrink remains
+     * inside the process heap before subtracting it from the unsigned break. */
+    uint64_t shrink = (uint64_t)(-(increment + 1)) + UINT64_C(1);
+    if (old_brk < proc->heap_start ||
+        shrink > old_brk - proc->heap_start)
       return -EINVAL;
+    new_brk = old_brk - shrink;
 
     uint64_t start_unmap = (new_brk + 4095) & ~(4095ULL);
     uint64_t end_unmap = (old_brk + 4095) & ~(4095ULL);

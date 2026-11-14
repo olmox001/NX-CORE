@@ -15,14 +15,15 @@ case "$arch" in
     nm_tool="${AARCH64_NM:-aarch64-none-elf-nm}"
     ;;
   *)
-    echo "usage: $0 amd64|aarch64" >&2
+    echo "usage: $0 amd64|aarch64 [build-dir]" >&2
     exit 2
     ;;
 esac
 
-archive="$root/build/$arch/libnxhal.a"
-consolidated="$root/build/$arch/nxhal-boundary.o"
-symbols="$root/build/$arch/nxhal-boundary.undefined"
+build_dir="${2:-$root/build/$arch}"
+archive="$build_dir/libnxhal.a"
+consolidated="$build_dir/nxhal-boundary.o"
+symbols="$build_dir/nxhal-boundary.undefined"
 
 if [ ! -f "$archive" ]; then
   echo "missing HAL archive: $archive" >&2
@@ -46,7 +47,7 @@ fi
 
 # NX-CORE may include HAL public headers, never provider/ISA headers or
 # architecture-selection preprocessor branches.
-if grep -RIn     --exclude-dir=HAL --exclude-dir=build     --include='*.c' --include='*.h'     -E '#[[:space:]]*include[[:space:]]*[<"]arch/|#[[:space:]]*(if|ifdef|ifndef).*ARCH_(AMD64|AARCH64)'     "$kernel_root" >/tmp/nxhal-generic-arch-leaks.$$; then
+if grep -RIn     --exclude-dir=HAL --exclude-dir=build --exclude-dir=external     --include='*.c' --include='*.h'     -E '#[[:space:]]*include[[:space:]]*[<"]arch/|#[[:space:]]*(if|ifdef|ifndef).*ARCH_(AMD64|AARCH64)'     "$kernel_root" >/tmp/nxhal-generic-arch-leaks.$$; then
   cat /tmp/nxhal-generic-arch-leaks.$$ >&2
   rm -f /tmp/nxhal-generic-arch-leaks.$$
   echo "NX-CORE: provider/architecture leak detected" >&2

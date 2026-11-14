@@ -16,7 +16,7 @@
 
 
 #define MAX_INPUT_DEVS 2
-#define INPUT_QSIZE 16
+#define INPUT_QSIZE VIRTIO_INPUT_QUEUE_SIZE
 
 struct virtio_input_dev {
   virtio_handle_t handle;
@@ -111,7 +111,7 @@ static void init_device(virtio_handle_t handle, uint32_t irq, int is_pci) {
   }
   memset(dev->events, 0, sizeof(struct virtio_input_event) * INPUT_QSIZE);
 
-  for (int i = 0; i < INPUT_QSIZE; i++) {
+  for (uint16_t i = 0U; (uint32_t)i < INPUT_QSIZE; ++i) {
     /* Descriptor addresses are PHYSICAL (DMA). */
     dev->desc[i].addr = virt_to_phys(&dev->events[i]);
     dev->desc[i].len = sizeof(struct virtio_input_event);
@@ -199,6 +199,7 @@ static void virtio_input_handler(uint32_t irq, void *data) {
 
     uint32_t status = v_read32(dev, VIRTIO_MMIO_INTERRUPT_STATUS);
     uint16_t processed_count = 0;
+    int queue_faulted = 0;
 
     /* FIX(VINPUT-DMA-01): the device writes dev->used (idx + ring entries)
      * via DMA every time it reports an event; this CPU's cache can hold a
@@ -213,53 +214,71 @@ static void virtio_input_handler(uint32_t irq, void *data) {
     hal_cache_invalidate((void *)dev->used,
                          virtio_vring_used_bytes(INPUT_QSIZE));
 
-    while (dev->last_used_idx != dev->used->idx) {
+    while (dev->last_used_idx != dev->used->idx && queue_faulted == 0) {
       struct vring_used_elem *e =
           &dev->used->ring[dev->last_used_idx % INPUT_QSIZE];
       uint32_t id = e->id;
 
-      /* FIX(VINPUT-DMA-02): dev->events[id] is the DMA target the device
-       * just wrote the actual event payload (type/code/value) into — a
-       * separate cache line from dev->used, and just as capable of being
-       * stale in this CPU's cache. */
-      hal_cache_invalidate((void *)&dev->events[id],
-                                  sizeof(dev->events[id]));
-      struct virtio_input_event *evt = &dev->events[id];
+      /* The descriptor id is DMA-controlled input.  Validate it before
+       * touching events[] or narrowing it back into the 16-bit avail ring. */
+      if (!virtio_input_descriptor_id_valid(id)) {
+        pr_err("VirtIO-Input: invalid used descriptor id=%u qsize=%u; "
+               "quarantining device\n",
+               (unsigned)id, (unsigned)INPUT_QSIZE);
+        queue_faulted = 1;
+      } else {
+        /* FIX(VINPUT-DMA-02): dev->events[id] is the DMA target the device
+         * just wrote the actual event payload (type/code/value) into — a
+         * separate cache line from dev->used, and just as capable of being
+         * stale in this CPU's cache. */
+        hal_cache_invalidate((void *)&dev->events[id],
+                             sizeof(dev->events[id]));
+        struct virtio_input_event *evt = &dev->events[id];
 
-      /* Single dispatch point: keys -> keyboard/IPC, pointer -> compositor,
-       * EV_SYN -> repaint. Same path PS/2 and USB HID use now. */
-      OS1driver_input_publish(INPUT_PROVIDER_VIRTIO,
-                               (uint8_t)(INPUT_DEVICE_VIRTIO_BASE + i),
-                               evt->type, evt->code, evt->value);
+        /* Single dispatch point: keys -> keyboard/IPC, pointer -> compositor,
+         * EV_SYN -> repaint. Same path PS/2 and USB HID use now. */
+        OS1driver_input_publish(INPUT_PROVIDER_VIRTIO,
+                                (uint8_t)(INPUT_DEVICE_VIRTIO_BASE + i),
+                                evt->type, evt->code, evt->value);
 
-      dev->avail->ring[dev->avail->idx % INPUT_QSIZE] = id;
-      dev->avail->idx++;
-      dev->last_used_idx++;
-      processed_count++;
+        uint32_t ring_slot = (uint32_t)dev->avail->idx % INPUT_QSIZE;
+        dev->avail->ring[ring_slot] = (uint16_t)id;
+        dev->avail->idx++;
+        dev->last_used_idx++;
+        processed_count++;
+      }
     }
 
-    /* FIX(VINPUT-DMA-03): the device DMA-reads dev->avail to learn which
-     * descriptor slots are free again (recycled just above); clean it so
-     * those writes are actually visible to the device's next DMA read,
-     * for the same reason as virtio_gpu.c's virtio_gpu_send()
-     * (VGPU-DMA-02) — hal_mb() alone does not push a dirty cache line
-     * out to physical RAM. Done once per IRQ, after the recycle loop,
-     * instead of per-iteration: avail is only consumed by the device on
-     * the v_notify() below, not before. */
-    if (processed_count > 0) {
-      hal_cache_clean((void *)dev->avail,
-                      virtio_vring_avail_bytes(INPUT_QSIZE));
-      hal_mb();
-    }
+    if (queue_faulted != 0) {
+      /* Stop queue processing before revoking DMA authority.  PCI transport
+       * revocation clears BusMaster; MMIO transport has no PCI DMA bit. */
+      dev->active = 0;
+      v_write32(dev, VIRTIO_MMIO_STATUS, 0);
+      if (virtio_dma_release(dev->handle) != 0)
+        pr_err("%s", "VirtIO-Input: DMA revoke failed; device quarantined\n");
+    } else {
+      /* FIX(VINPUT-DMA-03): the device DMA-reads dev->avail to learn which
+       * descriptor slots are free again (recycled just above); clean it so
+       * those writes are actually visible to the device's next DMA read,
+       * for the same reason as virtio_gpu.c's virtio_gpu_send()
+       * (VGPU-DMA-02) — hal_mb() alone does not push a dirty cache line
+       * out to physical RAM. Done once per IRQ, after the recycle loop,
+       * instead of per-iteration: avail is only consumed by the device on
+       * the v_notify() below, not before. */
+      if (processed_count > 0U) {
+        hal_cache_clean((void *)dev->avail,
+                        virtio_vring_avail_bytes(INPUT_QSIZE));
+        hal_mb();
+      }
 
-    if (status != 0) {
-      v_write32(dev, VIRTIO_MMIO_INTERRUPT_ACK, status);
-    } else if (processed_count == 0) {
-      v_read32(dev, VIRTIO_MMIO_INTERRUPT_ACK);
-    }
+      if (status != 0U) {
+        v_write32(dev, VIRTIO_MMIO_INTERRUPT_ACK, status);
+      } else if (processed_count == 0U) {
+        (void)v_read32(dev, VIRTIO_MMIO_INTERRUPT_ACK);
+      }
 
-    if (processed_count > 0) {
-      v_notify(dev, 0);
+      if (processed_count > 0U)
+        v_notify(dev, 0);
     }
   }
 }

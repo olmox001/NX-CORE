@@ -1390,9 +1390,21 @@ static void ext4_free_block_range(struct ext4_fs *fs, uint32_t start,
     kfree(bitmap);
     return;
   }
+
+  uint32_t group_free =
+      (uint32_t)fs->bgs[g0].bg_free_blocks_count_lo + freed;
+  if (group_free > UINT16_MAX) {
+    /* A valid 4 KiB ext4 block bitmap describes at most 32768 blocks, so
+     * exceeding the 16-bit on-disk counter proves the descriptor was stale
+     * or corrupt. Recover from the bitmap that was just written instead of
+     * truncating the arithmetic. */
+    group_free = bitmap_count_clear(bitmap, EXT4_BLOCK_SIZE);
+    pr_warn("Ext4: group %u free-block counter repaired to %u during free\n",
+            g0, group_free);
+  }
   kfree(bitmap);
 
-  fs->bgs[g0].bg_free_blocks_count_lo += (uint16_t)freed;
+  fs->bgs[g0].bg_free_blocks_count_lo = (uint16_t)group_free;
   fs->sb.s_free_blocks_count_lo += freed;
   ext4_sync_bg_sb(fs);
   spin_unlock_irqrestore(&fs->lock, lock_flags);
@@ -2074,9 +2086,11 @@ static int ext4_dir_find_slot(const uint8_t *blk_buf, uint16_t need,
     if (de->rec_len < 8 || de->rec_len > (EXT4_BLOCK_SIZE - off))
       return -1; /* corrupt/end-of-chain */
 
-    uint16_t used = de->inode ? dirent_ideal_len(de->name_len) : 0;
-    uint16_t slack = de->rec_len - used;
-    if (slack >= need) {
+    uint16_t used = de->inode ? dirent_ideal_len(de->name_len) : 0U;
+    if (used > de->rec_len)
+      return -1; /* live entry cannot consume more than its record */
+    uint32_t slack = (uint32_t)de->rec_len - (uint32_t)used;
+    if (slack >= (uint32_t)need) {
       *off_out = off;
       return 1;
     }
@@ -2141,10 +2155,15 @@ static int ext4_dir_insert(struct ext4_fs *fs, uint32_t dir_ino,
     } else {
       uint16_t old_rec_len = de->rec_len;
       de->rec_len = dirent_ideal_len(de->name_len);
+      if (de->rec_len > old_rec_len) {
+        kfree(blk_buf);
+        return -1;
+      }
       struct ext4_dir_entry *nde =
           (struct ext4_dir_entry *)(blk_buf + off + de->rec_len);
       nde->inode = new_ino;
-      nde->rec_len = old_rec_len - de->rec_len;
+      nde->rec_len =
+          (uint16_t)((uint32_t)old_rec_len - (uint32_t)de->rec_len);
       nde->name_len = (uint8_t)name_len;
       nde->file_type = file_type;
       memcpy(nde->name, name, name_len);

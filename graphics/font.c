@@ -195,7 +195,7 @@ static void gl_draw_char_clipped(struct gl_surface *surf, int x, int y,
         /* Proper coverage blend: round-to-nearest /255 (not >>8), so anti-
          * aliased glyph edges are full-strength, not dimmed (GFX-DYN-01 #121.4). */
         uint32_t bg = surf->buffer[py * surf->stride + px];
-        uint32_t inv_alpha = 255 - alpha;
+        uint32_t inv_alpha = UINT32_C(255) - (uint32_t)alpha;
 
         uint32_t r = gl_div255(r_color * alpha + ((bg >> 16) & 0xFF) * inv_alpha);
         uint32_t gr = gl_div255(g_color * alpha + ((bg >> 8) & 0xFF) * inv_alpha);
@@ -274,10 +274,16 @@ void gl_draw_string(struct gl_surface *surf, int x, int y, const char *str,
         rem--;
         continue;
     }
+    size_t step = (size_t)consumed;
+    if (step > rem) {
+      str++;
+      rem--;
+      continue;
+    }
     gl_draw_char(surf, cursor_x, y, codepoint, color);
     cursor_x += graphics_char_width(codepoint);
-    str += consumed;
-    rem -= consumed;
+    str += step;
+    rem -= step;
   }
 }
 
@@ -301,10 +307,16 @@ void gl_draw_string_clipped(struct gl_surface *surf, int x, int y,
         rem--;
         continue;
     }
+    size_t step = (size_t)consumed;
+    if (step > rem) {
+      str++;
+      rem--;
+      continue;
+    }
     gl_draw_char_clipped(surf, cursor_x, y, codepoint, color, cx1, cy1, cx2, cy2);
     cursor_x += graphics_char_width(codepoint);
-    str += consumed;
-    rem -= consumed;
+    str += step;
+    rem -= step;
   }
 }
 
@@ -338,9 +350,15 @@ int graphics_string_width(const char *str) {
         rem--;
         continue;
     }
+    size_t step = (size_t)consumed;
+    if (step > rem) {
+      str++;
+      rem--;
+      continue;
+    }
     width += graphics_char_width(codepoint);
-    str += consumed;
-    rem -= consumed;
+    str += step;
+    rem -= step;
   }
   return width;
 }

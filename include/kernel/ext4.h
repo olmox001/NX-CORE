@@ -238,7 +238,7 @@ _Static_assert(sizeof(struct ext4_dir_entry) == 8,
 #define EXT4_EXT_MAGIC 0xF30A
 /* ee_len above this marks an unwritten (preallocated) extent: the blocks
  * are mapped but must read as zeros; actual length = ee_len - 32768. */
-#define EXT4_EXT_UNWRITTEN_LEN 32768
+#define EXT4_EXT_UNWRITTEN_LEN UINT32_C(32768)
 
 struct ext4_extent_header {
   uint16_t eh_magic; /* must equal EXT4_EXT_MAGIC */

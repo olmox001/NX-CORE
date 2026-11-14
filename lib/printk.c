@@ -185,27 +185,31 @@ static int vprintk_prefixed(const char *message_prefix, const char *fmt,
 
   cpu->in_printk = 1;
 
-  /* Prepend "[C%u] " CPU prefix for multi-CPU log disambiguation */
-  int pfx = snprintf(cpu->printk_buf, 8, "[C%u] ", cpu->cpu_id);
-  if (pfx < 0)
-    pfx = 0;
+  /* Prepend "[C%u] " CPU prefix for multi-CPU log disambiguation. */
+  int pfx_result = snprintf(cpu->printk_buf, 8U, "[C%u] ", cpu->cpu_id);
+  size_t pfx = 0U;
+  if (pfx_result > 0) {
+    pfx = (size_t)pfx_result;
+    if (pfx >= sizeof(cpu->printk_buf))
+      pfx = sizeof(cpu->printk_buf) - 1U;
+  }
 
   /* Optional severity prefix is part of the same atomic UART message. */
   if (message_prefix != NULL) {
     size_t message_prefix_len = strlen(message_prefix);
-    size_t available = sizeof(cpu->printk_buf) - (size_t)pfx;
+    size_t available = sizeof(cpu->printk_buf) - pfx;
     if (message_prefix_len >= available)
       message_prefix_len = available - 1U;
     memcpy(cpu->printk_buf + pfx, message_prefix, message_prefix_len);
-    pfx += (int)message_prefix_len;
+    pfx += message_prefix_len;
     cpu->printk_buf[pfx] = '\0';
   }
 
   /* Format the actual message after the CPU/severity prefixes. */
-  len = vsnprintf(cpu->printk_buf + pfx, sizeof(cpu->printk_buf) - (size_t)pfx,
-                  fmt, args);
+  size_t remaining = sizeof(cpu->printk_buf) - pfx;
+  len = vsnprintf(cpu->printk_buf + pfx, remaining, fmt, args);
 
-  if (len >= (int)(sizeof(cpu->printk_buf) - pfx - 1)) {
+  if (len >= 0 && (size_t)len >= remaining - 1U) {
     cpu->printk_dropped++;
     int t_len = 11;
     if (sizeof(cpu->printk_buf) > (size_t)t_len) {

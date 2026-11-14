@@ -60,7 +60,7 @@ struct partition {
   uint64_t start_lba;
   uint64_t end_lba;
   uint64_t size_sectors;
-  uint32_t index;
+  int index;
   uint8_t type_guid[16];
 };
 

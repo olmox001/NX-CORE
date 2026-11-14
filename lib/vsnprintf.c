@@ -93,22 +93,23 @@
  *   than the requested field width.  Example: print_num(..., -42, 10, 5, -1,
  *   FLAG_ZEROPAD|FLAG_SIGN) emits "-00042" (6 chars) instead of "-0042".
  */
-static int print_num(char *buf, size_t size, uint64_t num, int base, int width, int precision, int flags) {
+static int print_num(char *buf, size_t size, uint64_t num, uint32_t base,
+                     int width, int precision, int flags) {
     static const char digits_lower[] = "0123456789abcdef";
     static const char digits_upper[] = "0123456789ABCDEF";
     const char *digits = (flags & FLAG_UPPERCASE) ? digits_upper : digits_lower;
 
     char tmp[66];
     int i = 0;
-    int written = 0;
+    size_t written = 0U;
     int needed = 0;
 
-    if (num == 0) {
+    if (num == 0U) {
         tmp[i++] = '0';
     } else {
         while (num != 0) {
-            tmp[i++] = digits[num % base];
-            num /= base;
+            tmp[i++] = digits[(size_t)(num % (uint64_t)base)];
+            num /= (uint64_t)base;
         }
     }
 
@@ -123,40 +124,40 @@ static int print_num(char *buf, size_t size, uint64_t num, int base, int width, 
 
     if (!(flags & (FLAG_ZEROPAD | FLAG_LEFT))) {
         while (width > 0) {
-            if (written < (int)size - 1) buf[written++] = ' ';
+            if (size > 0U && written < size - 1U) buf[written++] = ' ';
             needed++;
             width--;
         }
     }
 
     if (flags & FLAG_SIGN) {
-        if (written < (int)size - 1) buf[written++] = '-';
+        if (size > 0U && written < size - 1U) buf[written++] = '-';
         needed++;
     } else if (flags & FLAG_PLUS) {
-        if (written < (int)size - 1) buf[written++] = '+';
+        if (size > 0U && written < size - 1U) buf[written++] = '+';
         needed++;
     } else if (flags & FLAG_SPACE) {
-        if (written < (int)size - 1) buf[written++] = ' ';
+        if (size > 0U && written < size - 1U) buf[written++] = ' ';
         needed++;
     }
 
     if (flags & FLAG_ZEROPAD) {
         while (width > 0) {
-            if (written < (int)size - 1) buf[written++] = '0';
+            if (size > 0U && written < size - 1U) buf[written++] = '0';
             needed++;
             width--;
         }
     }
 
     while (i > 0) {
-        if (written < (int)size - 1) buf[written++] = tmp[--i];
+        if (size > 0U && written < size - 1U) buf[written++] = tmp[--i];
         else i--;
         needed++;
     }
 
     if (flags & FLAG_LEFT) {
         while (width > 0) {
-            if (written < (int)size - 1) buf[written++] = ' ';
+            if (size > 0U && written < size - 1U) buf[written++] = ' ';
             needed++;
             width--;
         }
@@ -369,7 +370,7 @@ static int fp_format(char *out, double value, char spec, int prec, int flags,
  *   (acceptable since the kernel does not use the FPU).
  */
 int vsnprintf(char *buf, size_t size, const char *fmt, va_list args) {
-    int written = 0;
+    size_t written = 0U;
     int needed = 0;
     int width, precision;
     int flags;
@@ -380,7 +381,7 @@ int vsnprintf(char *buf, size_t size, const char *fmt, va_list args) {
 
     while (*fmt) {
         if (*fmt != '%') {
-            if (size > 0 && written < (int)size - 1) buf[written++] = *fmt;
+            if (size > 0U && written < size - 1U) buf[written++] = *fmt;
             needed++;
             fmt++;
             continue;
@@ -461,7 +462,7 @@ int vsnprintf(char *buf, size_t size, const char *fmt, va_list args) {
         /* Conversion specifier */
         switch (*fmt) {
             case 'c':
-                if (size > 0 && written < (int)size - 1) buf[written++] = (char)va_arg(args, int);
+                if (size > 0U && written < size - 1U) buf[written++] = (char)va_arg(args, int);
                 needed++;
                 break;
 
@@ -475,58 +476,83 @@ int vsnprintf(char *buf, size_t size, const char *fmt, va_list args) {
                 }
                 if (!(flags & FLAG_LEFT)) {
                     while (len < width) {
-                        if (size > 0 && written < (int)size - 1) buf[written++] = ' ';
+                        if (size > 0U && written < size - 1U) buf[written++] = ' ';
                         needed++;
                         width--;
                     }
                 }
                 for (int j = 0; j < len; j++) {
-                    if (size > 0 && written < (int)size - 1) buf[written++] = s[j];
+                    if (size > 0U && written < size - 1U) buf[written++] = s[j];
                     needed++;
                 }
                 while (len < width) {
-                    if (size > 0 && written < (int)size - 1) buf[written++] = ' ';
+                    if (size > 0U && written < size - 1U) buf[written++] = ' ';
                     needed++;
                     width--;
                 }
                 break;
 
             case 'd':
-            case 'i':
-                if (is_long == 2)      num = va_arg(args, int64_t);
-                else if (is_long == 1) num = va_arg(args, long);
-                else                  num = va_arg(args, int);
+            case 'i': {
+                int64_t signed_num;
+                if (is_long == 2)
+                    signed_num = va_arg(args, int64_t);
+                else if (is_long == 1)
+                    signed_num = (int64_t)va_arg(args, long);
+                else
+                    signed_num = (int64_t)va_arg(args, int);
 
-                if ((int64_t)num < 0) {
+                if (signed_num < 0) {
                     flags |= FLAG_SIGN;
-                    num = -(int64_t)num;
-                }
-                needed += print_num(size > 0 ? buf + written : NULL, size > (size_t)written ? size - written : 0, num, 10, width, precision, flags);
-                if (size > 0 && written < (int)size - 1) {
-                    int add = size - 1 - written;
-                    int added = print_num(buf + written, size - written, num, 10, width, precision, flags);
-                    written += added < add ? added : add;
+                    num = UINT64_C(0) - (uint64_t)signed_num;
                 } else {
-                    written += 0;
+                    num = (uint64_t)signed_num;
+                }
+
+                size_t remaining = size > written ? size - written : 0U;
+                int n_added =
+                    print_num(remaining > 0U ? buf + written : NULL, remaining,
+                              num, UINT32_C(10), width, precision, flags);
+                needed += n_added;
+                if (remaining > 0U) {
+                    size_t capacity = remaining - 1U;
+                    size_t committed = (size_t)n_added;
+                    if (committed > capacity)
+                        committed = capacity;
+                    written += committed;
                 }
                 break;
+            }
 
             case 'u':
             case 'x':
-            case 'X':
-                if (is_long == 2)      num = va_arg(args, uint64_t);
-                else if (is_long == 1) num = va_arg(args, unsigned long);
-                else                  num = va_arg(args, unsigned int);
+            case 'X': {
+                if (is_long == 2)
+                    num = va_arg(args, uint64_t);
+                else if (is_long == 1)
+                    num = (uint64_t)va_arg(args, unsigned long);
+                else
+                    num = (uint64_t)va_arg(args, unsigned int);
 
-                if (*fmt == 'X') flags |= FLAG_UPPERCASE;
-                
-                int n_added = print_num(size > 0 ? buf + written : NULL, size > (size_t)written ? size - written : 0, num, (*fmt == 'u' ? 10 : 16), width, precision, flags);
+                if (*fmt == 'X')
+                    flags |= FLAG_UPPERCASE;
+
+                size_t remaining = size > written ? size - written : 0U;
+                uint32_t base =
+                    *fmt == 'u' ? UINT32_C(10) : UINT32_C(16);
+                int n_added =
+                    print_num(remaining > 0U ? buf + written : NULL, remaining,
+                              num, base, width, precision, flags);
                 needed += n_added;
-                if (size > 0 && written < (int)size - 1) {
-                    int add = size - 1 - written;
-                    written += n_added < add ? n_added : add;
+                if (remaining > 0U) {
+                    size_t capacity = remaining - 1U;
+                    size_t committed = (size_t)n_added;
+                    if (committed > capacity)
+                        committed = capacity;
+                    written += committed;
                 }
                 break;
+            }
 
             case 'p': {
                 /* Build the pointer token "0x" + 16 zero-padded hex digits in
@@ -541,24 +567,25 @@ int vsnprintf(char *buf, size_t size, const char *fmt, va_list args) {
                 int pl = 0;
                 pb[pl++] = '0';
                 pb[pl++] = 'x';
-                pl += print_num(pb + pl, sizeof(pb) - pl, num, 16, 16, -1, FLAG_ZEROPAD);
+                pl += print_num(pb + pl, sizeof(pb) - (size_t)pl, num,
+                                UINT32_C(16), 16, -1, FLAG_ZEROPAD);
                 int pad = width - pl;
                 if (!(flags & FLAG_LEFT)) {
                     for (int k = 0; k < pad; k++) {
-                        if (size > 0 && written < (int)size - 1) buf[written++] = ' ';
+                        if (size > 0U && written < size - 1U) buf[written++] = ' ';
                         needed++;
                     }
                     for (int k = 0; k < pl; k++) {
-                        if (size > 0 && written < (int)size - 1) buf[written++] = pb[k];
+                        if (size > 0U && written < size - 1U) buf[written++] = pb[k];
                         needed++;
                     }
                 } else {
                     for (int k = 0; k < pl; k++) {
-                        if (size > 0 && written < (int)size - 1) buf[written++] = pb[k];
+                        if (size > 0U && written < size - 1U) buf[written++] = pb[k];
                         needed++;
                     }
                     for (int k = 0; k < pad; k++) {
-                        if (size > 0 && written < (int)size - 1) buf[written++] = ' ';
+                        if (size > 0U && written < size - 1U) buf[written++] = ' ';
                         needed++;
                     }
                 }
@@ -566,7 +593,7 @@ int vsnprintf(char *buf, size_t size, const char *fmt, va_list args) {
             }
 
             case '%':
-                if (size > 0 && written < (int)size - 1) buf[written++] = '%';
+                if (size > 0U && written < size - 1U) buf[written++] = '%';
                 needed++;
                 break;
 
@@ -586,34 +613,34 @@ int vsnprintf(char *buf, size_t size, const char *fmt, va_list args) {
                         /* zero-fill goes AFTER any sign/space prefix */
                         int sk = (nb[0] == '-' || nb[0] == '+' || nb[0] == ' ') ? 1 : 0;
                         for (int k = 0; k < sk; k++) {
-                            if (size > 0 && written < (int)size - 1) buf[written++] = nb[k];
+                            if (size > 0U && written < size - 1U) buf[written++] = nb[k];
                             needed++;
                         }
                         for (int k = 0; k < pad; k++) {
-                            if (size > 0 && written < (int)size - 1) buf[written++] = '0';
+                            if (size > 0U && written < size - 1U) buf[written++] = '0';
                             needed++;
                         }
                         for (int k = sk; k < ln; k++) {
-                            if (size > 0 && written < (int)size - 1) buf[written++] = nb[k];
+                            if (size > 0U && written < size - 1U) buf[written++] = nb[k];
                             needed++;
                         }
                     } else {
                         for (int k = 0; k < pad; k++) {
-                            if (size > 0 && written < (int)size - 1) buf[written++] = ' ';
+                            if (size > 0U && written < size - 1U) buf[written++] = ' ';
                             needed++;
                         }
                         for (int k = 0; k < ln; k++) {
-                            if (size > 0 && written < (int)size - 1) buf[written++] = nb[k];
+                            if (size > 0U && written < size - 1U) buf[written++] = nb[k];
                             needed++;
                         }
                     }
                 } else {
                     for (int k = 0; k < ln; k++) {
-                        if (size > 0 && written < (int)size - 1) buf[written++] = nb[k];
+                        if (size > 0U && written < size - 1U) buf[written++] = nb[k];
                         needed++;
                     }
                     for (int k = 0; k < pad; k++) {
-                        if (size > 0 && written < (int)size - 1) buf[written++] = ' ';
+                        if (size > 0U && written < size - 1U) buf[written++] = ' ';
                         needed++;
                     }
                 }
@@ -622,15 +649,15 @@ int vsnprintf(char *buf, size_t size, const char *fmt, va_list args) {
 #endif /* !KERNEL */
 
             default:
-                if (size > 0 && written < (int)size - 1) buf[written++] = '%';
+                if (size > 0U && written < size - 1U) buf[written++] = '%';
                 needed++;
-                if (size > 0 && written < (int)size - 1) buf[written++] = *fmt;
+                if (size > 0U && written < size - 1U) buf[written++] = *fmt;
                 needed++;
                 break;
         }
         fmt++;
     }
 
-    if (size > 0) buf[written] = '\0';
+    if (size > 0U) buf[written] = '\0';
     return needed;
 }
