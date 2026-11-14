@@ -38,10 +38,16 @@ static void mmio_notify(struct virtio_device *dev, uint32_t queue_idx) {
   mmio_write32(dev, VIRTIO_MMIO_QUEUE_NOTIFY, queue_idx);
 }
 
+static int mmio_set_dma(struct virtio_device *dev, int enabled) {
+  (void)enabled;
+  return dev != NULL ? 0 : -1;
+}
+
 static const struct virtio_transport_ops mmio_ops = {
     .read32 = mmio_read32,
     .write32 = mmio_write32,
     .notify = mmio_notify,
+    .set_dma = mmio_set_dma,
 };
 
 static int virtio_storage_prepare(uint32_t device_count) {
@@ -122,17 +128,19 @@ uint32_t virtio_queue_set_size(virtio_handle_t dev, uint32_t queue_idx,
   return qsize;
 }
 
-void virtio_setup_queue(virtio_handle_t dev, uint32_t queue_idx,
-                        uint64_t desc_addr, uint64_t avail_addr,
-                        uint64_t used_addr) {
+int virtio_setup_queue(virtio_handle_t dev, uint32_t queue_idx,
+                       uint64_t desc_addr, uint64_t avail_addr,
+                       uint64_t used_addr) {
   (void)avail_addr;
   (void)used_addr;
-  if (dev == NULL || (desc_addr % (uint64_t)HAL_PAGE_SIZE) != 0U)
-    return;
+  if (dev == NULL || dev->dma_authorized == UINT8_C(0) ||
+      (desc_addr % (uint64_t)HAL_PAGE_SIZE) != 0U)
+    return -1;
   virtio_write_reg(dev, VIRTIO_MMIO_QUEUE_SEL, queue_idx);
   mmio_write32(dev, UINT32_C(0x028), (uint32_t)HAL_PAGE_SIZE);
   virtio_write_reg(dev, VIRTIO_MMIO_QUEUE_PFN,
                    (uint32_t)(desc_addr / (uint64_t)HAL_PAGE_SIZE));
+  return 0;
 }
 
 int arch_virtio_get_count(uint32_t device_id) {

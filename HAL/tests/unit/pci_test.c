@@ -3,7 +3,6 @@
 
 #include <stddef.h>
 #include <stdint.h>
-#include <stdlib.h>
 
 static uint32_t bar0_value = UINT32_C(0x80000000);
 static uint32_t bar4_value = UINT32_C(0x00002004);
@@ -21,6 +20,8 @@ static uint32_t backend_read(uint8_t bus, uint8_t dev, uint8_t func,
     return NXHAL_PCI_CONFIG_INVALID;
   if (offset == 0U)
     return UINT32_C(0xabcd1234);
+  if (offset == UINT8_C(0x04))
+    return bar5_value;
   if (offset == UINT8_C(0x08))
     return UINT32_C(0x01060100);
   if (offset == UINT8_C(0x0c))
@@ -41,7 +42,9 @@ static void backend_write(uint8_t bus, uint8_t dev, uint8_t func,
   if (bus != 0U || dev != 1U || func != 0U)
     return;
   ++write_calls;
-  if (offset == UINT8_C(0x10)) {
+  if (offset == UINT8_C(0x04)) {
+    bar5_value = value;
+  } else if (offset == UINT8_C(0x10)) {
     bar0_probe = value == UINT32_MAX;
     if (bar0_probe == 0)
       bar0_value = value;
@@ -95,6 +98,7 @@ int main(void) {
   const struct nxhal_pci_config_ops ops = {backend_read, backend_write};
   struct nxhal_pci_bar bar;
   uint32_t bdf = 0U;
+  unsigned before;
 
   if (nxhal_pci_set_config_ops(NULL) == 0)
     return 1;
@@ -109,43 +113,71 @@ int main(void) {
     return 5;
   nxhal_pci_config_write(0U, 1U, 0U, UINT8_C(0x04), UINT32_C(7));
   nxhal_pci_config_write(0U, 32U, 0U, 0U, UINT32_C(1));
-  if (write_calls != 1U)
+  if (write_calls != 1U || bar5_value != UINT32_C(7))
     return 6;
 
-  if (nxhal_pci_get_class(UINT32_C(0x000100)) != UINT32_C(0x01060100))
+  /* Discovery must preserve unrelated command bits, clear firmware-enabled
+   * BusMaster, enable address decode, and never echo PCI Status W1C bits. */
+  bar5_value = UINT32_C(0xa5a52004);
+  before = write_calls;
+  if (nxhal_pci_enable_decode(UINT32_C(0x000100)) != 0 ||
+      bar5_value != UINT32_C(0x2003) || write_calls != before + 1U)
     return 7;
-  if (nxhal_pci_get_header_type(UINT32_C(0x000100)) != 0U)
+
+  /* Bus-master authority is an independent bit transition. */
+  before = write_calls;
+  if (nxhal_pci_set_bus_master(UINT32_C(0x000100), 1) != 0 ||
+      bar5_value != UINT32_C(0x2007) || write_calls != before + 1U)
     return 8;
-  if (nxhal_pci_get_interrupt(UINT32_C(0x000100)) != UINT8_C(11))
+  before = write_calls;
+  if (nxhal_pci_set_bus_master(UINT32_C(0x000100), 0) != 0 ||
+      bar5_value != UINT32_C(0x2003) || write_calls != before + 1U)
     return 9;
+  before = write_calls;
+  if (nxhal_pci_set_bus_master(UINT32_C(0x002000), 1) == 0 ||
+      write_calls != before)
+    return 10;
+
+  if (nxhal_pci_get_class(UINT32_C(0x000100)) != UINT32_C(0x01060100))
+    return 11;
+  if (nxhal_pci_get_header_type(UINT32_C(0x000100)) != 0U)
+    return 12;
+  if (nxhal_pci_get_interrupt(UINT32_C(0x000100)) != UINT8_C(11))
+    return 13;
 
   if (nxhal_pci_get_bar(UINT32_C(0x000100), 0U, &bar) != 0 ||
       bar.base != UINT64_C(0x80000000) || bar.size != UINT64_C(0x1000) ||
       bar.is_io != 0U || bar.is_64 != 0U)
-    return 10;
+    return 14;
+  bar5_value = UINT32_C(0x00000001);
   if (nxhal_pci_get_bar(UINT32_C(0x000100), 4U, &bar) != 0 ||
       bar.base != UINT64_C(0x0000000100002000) ||
       bar.size != UINT64_C(0x2000) || bar.is_64 == 0U)
-    return 11;
+    return 15;
 
   if (nxhal_pci_find_device(UINT16_C(0x1234), UINT16_C(0xabcd), &bdf) != 0 ||
       bdf != UINT32_C(0x000100))
-    return 12;
+    return 16;
   if (nxhal_pci_find_device(UINT16_C(0xbeef), UINT16_C(1), &bdf) == 0)
-    return 13;
+    return 17;
 
   if (nxhal_pci_enumerate(enum_callback) != 0 || enumerate_calls != 1U)
-    return 14;
+    return 18;
   if (nxhal_pci_enumerate(NULL) == 0)
-    return 15;
+    return 19;
 
   if (nxhal_pci_set_mmio_windows(UINT64_C(0x10000000), UINT64_C(0x100000),
                                  UINT64_C(0x100000000), UINT64_C(0x200000)) != 0)
-    return 16;
+    return 20;
   if (nxhal_pci_set_mmio_windows(UINT64_MAX, 2U, 0U, 0U) == 0)
-    return 17;
+    return 21;
+
+  /* The scan itself must revoke a firmware-left BusMaster bit before publish. */
+  bar5_value = UINT32_C(0x00002004);
   if (nxhal_pci_scan_and_register() != 0 || publish_calls != 1U)
-    return 18;
+    return 22;
+  if (bar5_value != UINT32_C(0x2003))
+    return 23;
 
   return 0;
 }

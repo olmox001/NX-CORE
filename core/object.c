@@ -1511,32 +1511,18 @@ long sys_object_write(int handle, const void *ubuf, size_t n) {
       }
     }
   } else if (o->type == OBJ_TYPE_CONSOLE) {
-    /* stdout/stderr: resolve the caller's OWN window first (a process with its
-     * own window renders there), else its controlling terminal (the launching
-     * shell) — the folded-in FD_WIN path.  window_text_write copies the user
-     * buffer and mirrors it to the UART.
-     *
-     * self_rendered (sched.h) processes are excluded from the own-window
-     * branch: once a process has blitted its OWN pixel content into a
-     * window (SYS_WINDOW_BLIT, syscall_dispatch.c), that window's buffer is
-     * its custom UI, not a text console — an implicit stdout write here
-     * (printf, an uncaught crash message, ...) must not draw glyphs over
-     * it.  Falls through to ctty_win (a self-rendering app's own printf
-     * still lands SOMEWHERE sane if it has a controlling terminal) or -1
-     * (window_text_write's `win_id > 0` gate then skips the compositor
-     * draw entirely; the UART mirror above is unaffected either way).
-     * SYS_WINDOW_WRITE (printf_win) is a SEPARATE, explicit call a self-
-     * rendering app can still use on purpose — only this implicit fd=1/2
-     * path is gated. */
-    int win_id = (current_process && !current_process->self_rendered)
-                     ? compositor_get_window_by_pid((int)current_process->pid)
-                     : -1;
-    if (win_id <= 0 && current_process)
-      win_id = current_process->ctty_win;
-    /* Focus controls INPUT, never stdout authority. The userland nxttyd
-     * owns each graphical TTY; legacy console writes with no own window or
-     * inherited ctty remain diagnostic-only (UART mirror from the common
-     * writer), rather than corrupting the currently focused GUI surface. */
+    /* stdout/stderr is independent from pixel-surface ownership.  A plain
+     * text process uses its own text-capable window when present, otherwise its
+     * inherited ctty.  A self-rendered GUI must not draw glyphs over its own
+     * pixels, but it still keeps the ctty inherited from the launching shell.
+     * Detached GUI processes have ctty=-1 and remain UART-only. */
+    int own_window = -1;
+    if (current_process && !current_process->self_rendered)
+      own_window = compositor_get_window_by_pid((int)current_process->pid);
+    int win_id = object_console_output_window(
+        current_process ? current_process->self_rendered : 0,
+        own_window, current_process ? current_process->ctty_win : -1);
+    /* Focus controls INPUT, never stdout authority. */
     ret = window_text_write(win_id, (const char *)ubuf, n);
   } else if (o->type == OBJ_TYPE_PORT) {
     /* Port SEND (needs the send right).  The handle's WRITE right IS the

@@ -1,4 +1,5 @@
 /* Hardware/surface resource provider. No executable names or userland roles. */
+#include <drivers/gpu/gpu.h>
 #include <kernel/resource.h>
 #include <kernel/object.h>
 #include <kernel/graphics.h>
@@ -42,10 +43,11 @@ static long surface_wait(void *state, long argument) {
 
 static long surface_read(void *state, void *user, size_t size) {
   struct os1_surface_state_v1 info = {0};
-  int width, height;
+  int width = 0, height = 0;
   (void)state;
   if (size != sizeof(info)) return -EINVAL;
-  compositor_get_size(&width, &height);
+  if (gpu_get_display_info(&width, &height) != 0 || width <= 0 || height <= 0)
+    return -ENODEV;
   info.abi_version = OS1_SURFACE_ABI_VERSION;
   info.struct_size = sizeof(info);
   info.generation = __atomic_load_n(&surface_generation, __ATOMIC_ACQUIRE);

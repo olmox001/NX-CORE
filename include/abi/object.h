@@ -138,6 +138,11 @@
 #define OS1_NS_TIME 6 /* path "system" → privileged read-only OBJ_TYPE_TIMER */
 #define OS1_NS_RESOURCE 7 /* provider resource name; authority is the handle */
 
+/* Registry object bounds are part of the object namespace contract. Kernel,
+ * providers and userland clients use one source of truth. */
+#define OS1_REGISTRY_KEY_MAX 64
+#define OS1_REGISTRY_VALUE_MAX 128
+
 /* cap_query packs the object type and the held rights into one return value:
  * (type << 24) | rights.  A negative return is an errno (-EBADF). */
 #define OS1_CAPQ_PACK(type, rights) (((long)((type) & 0xFF) << 24) | ((rights) & 0x00FFFFFF))

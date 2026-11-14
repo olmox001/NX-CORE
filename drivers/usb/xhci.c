@@ -595,7 +595,8 @@ static struct device_driver xhci_driver = {
     .device = DRV_ANY_ID,
     .class_code = 0x0C,  /* Serial bus controller */
     .subclass = 0x03,    /* USB */
-    .prog_if = 0x30,     /* xHCI */
+    .prog_if = 0x30,
+    .flags = DEVICE_DRIVER_DMA,     /* xHCI */
     .probe = xhci_probe,
 };
 

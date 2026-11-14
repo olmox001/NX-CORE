@@ -49,13 +49,16 @@ void virtio_blk_init(void) {
   virtio_handle_t dev = NULL;
   uint32_t irq = 0;
 
-  if (arch_virtio_get_device(VIRTIO_DEV_BLOCK, 0, &dev, &irq) == 0) {
-    pr_info("VirtIO: Found Block Device (IRQ %u)\n", irq);
-    virtio_blk_dev = dev;
-  } else {
+  if (arch_virtio_get_device(VIRTIO_DEV_BLOCK, 0, &dev, &irq) != 0) {
     pr_info("%s", "VirtIO: No block device found\n");
     return;
   }
+  pr_info("VirtIO: Found Block Device (IRQ %u)\n", irq);
+  if (virtio_dma_acquire(dev) != 0) {
+    pr_err("%s", "VirtIO-Blk: DMA claim rejected\n");
+    return;
+  }
+  virtio_blk_dev = dev;
 
   /* === Common initialization (Legacy) === */
   uint32_t version = virtio_read_reg(dev, VIRTIO_MMIO_VERSION);
@@ -94,6 +97,10 @@ void virtio_blk_init(void) {
   virtio_blk_qsize = qsize;
   if (virtio_blk_qsize == 0) {
     pr_err("%s", "VirtIO-Blk: Invalid queue size (0)!\n");
+    virtio_write_reg(dev, VIRTIO_MMIO_STATUS, 0);
+    if (virtio_dma_release(dev) != 0)
+      pr_err("%s", "VirtIO-Blk: DMA revoke failed after queue-size error\n");
+    virtio_blk_dev = NULL;
     return;
   }
 
@@ -119,6 +126,11 @@ void virtio_blk_init(void) {
   if (!qmem) {
     pr_err("VirtIO: Failed to allocate %u pages for queue memory\n",
            (unsigned)qpages);
+    virtio_write_reg(dev, VIRTIO_MMIO_STATUS, 0);
+    if (virtio_dma_release(dev) != 0)
+      pr_err("%s", "VirtIO-Blk: DMA revoke failed after allocation error\n");
+    virtio_blk_dev = NULL;
+    virtio_blk_qsize = 0U;
     return;
   }
   memset(qmem, 0, (size_t)qpages * queue_page_size);
@@ -132,8 +144,24 @@ void virtio_blk_init(void) {
 
   /* Unified HAL API handles Legacy/Modern address registration.
    * The device needs PHYSICAL ring addresses (virt_to_phys). */
-  virtio_setup_queue(dev, 0, virt_to_phys(desc), virt_to_phys(avail),
-                     virt_to_phys(used));
+  if (virtio_setup_queue(dev, 0, virt_to_phys(desc),
+                         virt_to_phys(avail), virt_to_phys(used)) != 0) {
+    pr_err("%s", "VirtIO-Blk: queue setup rejected without DMA ownership\n");
+    virtio_write_reg(dev, VIRTIO_MMIO_STATUS, 0);
+    if (virtio_dma_release(dev) != 0) {
+      pr_err("%s", "VirtIO-Blk: DMA revoke failed; queue memory quarantined\n");
+      virtio_blk_dev = NULL;
+      virtio_blk_qsize = 0U;
+      return;
+    }
+    pmm_free_pages(qmem, qpages);
+    desc = NULL;
+    avail = NULL;
+    used = NULL;
+    virtio_blk_dev = NULL;
+    virtio_blk_qsize = 0U;
+    return;
+  }
 
   /* Driver OK */
   status |= VIRTIO_STATUS_DRIVER_OK;

@@ -3,12 +3,11 @@
  *
  * Only the bootstrapped PID1 receives machine authority. No process paths,
  * startup order, service names or restart policy live in Core's main().
- * The storage provider publishes boot image identities into the machine
- * registry; this manager consumes those identities and owns process lifecycle.
- * nxinit supplies the declarative catalog over a kernel-stamped PORT queue.
+ * The storage provider publishes the selected image startup locator into the
+ * machine registry. nxinit supplies startup declarations over the existing
+ * kernel-stamped PORT; this manager owns process lifecycle, not VFS policy.
  */
 #include <nxmanage.h>
-#include <nxsystem_image.h>
 #include <os1.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -18,7 +17,7 @@
 struct nxm_slot {
   char name[NXMANAGE_NAME_MAX]; /* authoritative registry object identity */
   int named;
-  char image[NXSYSTEM_IMAGE_NAME_MAX];
+  char executable[sizeof(((struct ipc_message *)0)->payload)];
   char args[48];
   char registry[40];
   int pid;
@@ -37,20 +36,11 @@ struct nxm_slot {
   uint64_t deadline_ms;
 };
 
-struct nxm_library {
-  char name[NXMANAGE_LIBRARY_NAME_MAX];
-  char path[NXMANAGE_LIBRARY_PATH_MAX];
-  char abi[NXMANAGE_LIBRARY_ABI_MAX];
-  int named;
-  int active;
-};
-
 /* Owned exclusively by the single-threaded PID1 manager event loop.
  * State cannot be accessed or reentered by IPC handlers on other CPUs. */
 struct nxm_state {
   struct nxm_slot slots[NXMANAGE_SLOTS];
-  struct nxm_library libraries[NXMANAGE_LIBRARY_SLOTS];
-  char init_image[NXSYSTEM_IMAGE_NAME_MAX];
+  char init_exec[OS1_SPAWN_PATH_MAX];
   int init_pid;
   int init_started;
   int init_finished;
@@ -70,17 +60,15 @@ static int nxm_string(const char *src, unsigned cap, unsigned *len) {
   return -1;
 }
 
-static int nxm_boot_init_image(char image[NXSYSTEM_IMAGE_NAME_MAX]) {
-  int status = OS1_registry_object_get(NXSYSTEM_BOOT_INIT_IMAGE_KEY, image,
-                                       NXSYSTEM_IMAGE_NAME_MAX);
-  if (status != 0 || !nxsystem_image_identity_valid(image))
-    return -1;
-  return 0;
+static int nxm_boot_init_exec(char exec[OS1_SPAWN_PATH_MAX]) {
+  int status = OS1_registry_object_get("system.boot.init", exec,
+                                       OS1_SPAWN_PATH_MAX);
+  return status == 0 && exec[0] != '\0' ? 0 : -1;
 }
 
 static void nxm_log_manager(const struct nxm_state *state) {
-  int written = printf("[NXMANAGE] init-image=%s manager-ready pid=1\n",
-                       state->init_image);
+  int written = printf("[NXMANAGE] init=%s manager-ready pid=1\n",
+                       state->init_exec);
   if (written < 0)
     OS1_report_error("nxmanage.uart_manager", -EIO);
 }
@@ -88,9 +76,9 @@ static void nxm_log_manager(const struct nxm_state *state) {
 static void nxm_log_service(const struct nxm_slot *slot, unsigned id,
                             const char *event, int pid) {
   int written = printf("[NXMANAGE] service=%s slot=%u event=%s pid=%d "
-                       "generation=%u mode=%u image=%s\n",
+                       "generation=%u mode=%u exec=%s\n",
                        slot->name, id, event, pid, slot->generation,
-                       slot->mode, slot->image);
+                       slot->mode, slot->executable);
   if (written < 0)
     OS1_report_error("nxmanage.uart_service", -EIO);
 }
@@ -99,9 +87,9 @@ static int nxm_unpack(const struct ipc_message *message,
                       struct nxm_slot *candidate) {
   const char *base = message->payload;
   unsigned offset = 0U;
-  char *dest[3] = {candidate->image, candidate->args,
+  char *dest[3] = {candidate->executable, candidate->args,
                    candidate->registry};
-  unsigned capacities[3] = {sizeof(candidate->image), sizeof(candidate->args),
+  unsigned capacities[3] = {sizeof(candidate->executable), sizeof(candidate->args),
                             sizeof(candidate->registry)};
   for (unsigned field = 0U; field < 3U; ++field) {
     unsigned length = 0U;
@@ -117,7 +105,7 @@ static int nxm_unpack(const struct ipc_message *message,
     }
     offset += length + 1U;
   }
-  if (!nxsystem_image_identity_valid(candidate->image) ||
+  if (candidate->executable[0] == '\0' ||
       (candidate->registry[0] != '\0' &&
        strncmp(candidate->registry, "srv.", 4U) != 0))
     return -1;
@@ -128,14 +116,13 @@ static int nxm_spawn(const struct nxm_slot *slot) {
   if (!slot->auth_set)
     return -EPERM;
   if (slot->args[0] == '\0')
-    return (int)nxsystem_image_spawn(NXSYSTEM_IMAGE_CLASS_SERVICE,
-                                     slot->image, PLVL_ROOT, slot->caps);
+    return (int)spawn_caps(slot->executable, PLVL_ROOT, slot->caps);
   if (slot->caps != CAP_ALL)
     return -EINVAL; /* argumentful capability-spawn needs an argv-aware API */
   char args[sizeof(slot->args)];
   for (unsigned i = 0U; i < sizeof(args); ++i)
     args[i] = slot->args[i];
-  char *argv[3] = {(char *)slot->image, NULL, NULL};
+  char *argv[3] = {(char *)slot->executable, NULL, NULL};
   unsigned argc = 1U, offset = 0U;
   for (unsigned i = 0U; i < sizeof(args); ++i) {
     char ch = args[i];
@@ -151,8 +138,7 @@ static int nxm_spawn(const struct nxm_slot *slot) {
     if (ch == '\0')
       break;
   }
-  return (int)nxsystem_image_spawn_args(
-      NXSYSTEM_IMAGE_CLASS_SERVICE, slot->image, (int)argc, argv);
+  return spawn_args(slot->executable, (int)argc, argv);
 }
 
 /* One stable registry object per canonical service name; a reader cannot
@@ -215,7 +201,7 @@ static int nxm_matching(const struct nxm_slot *old,
                         const struct nxm_slot *candidate) {
   return old->mode == candidate->mode &&
          old->caps == candidate->caps &&
-         strcmp(old->image, candidate->image) == 0 &&
+         strcmp(old->executable, candidate->executable) == 0 &&
          strcmp(old->args, candidate->args) == 0 &&
          strcmp(old->registry, candidate->registry) == 0;
 }
@@ -254,124 +240,6 @@ static int nxm_name(struct nxm_state *state,
       break;
   }
   slot->named = 1;
-  return 0;
-}
-
-static int nxm_library_name_valid(const char *name, unsigned *length) {
-  if (name == NULL || length == NULL) return -EINVAL;
-  for (unsigned i = 0U; i < NXMANAGE_LIBRARY_NAME_MAX; ++i) {
-    char ch = name[i];
-    if (ch == '\0') {
-      if (i == 0U) return -EINVAL;
-      *length = i;
-      return 0;
-    }
-    if (!((ch >= 'a' && ch <= 'z') || (ch >= '0' && ch <= '9') ||
-          ch == '_' || ch == '-')) return -EINVAL;
-  }
-  return -ENAMETOOLONG;
-}
-
-static int nxm_library_path_valid(const char *path) {
-  if (path == NULL || strncmp(path, "/lib/", 5U) != 0 || path[5] == '\0')
-    return 0;
-  for (unsigned i = 5U; i < NXMANAGE_LIBRARY_PATH_MAX; ++i) {
-    char ch = path[i];
-    if (ch == '\0') return 1;
-    if (!((ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') ||
-          (ch >= '0' && ch <= '9') || ch == '_' || ch == '-' ||
-          ch == '.')) return 0;
-  }
-  return 0;
-}
-
-static int nxm_library_abi_valid(const char *abi) {
-  if (abi == NULL || abi[0] == '\0') return 0;
-  for (unsigned i = 0U; i < NXMANAGE_LIBRARY_ABI_MAX; ++i) {
-    char ch = abi[i];
-    if (ch == '\0') return 1;
-    if (!((ch >= '0' && ch <= '9') || ch == '.')) return 0;
-  }
-  return 0;
-}
-
-static int nxm_library_unpack(const struct ipc_message *message,
-                              struct nxm_library *candidate) {
-  const char *base = message->payload;
-  unsigned first = 0U;
-  if (nxm_string(base, (unsigned)sizeof(message->payload), &first) != 0 ||
-      first >= sizeof(candidate->path)) return -EINVAL;
-  unsigned second = 0U;
-  unsigned offset = first + 1U;
-  if (offset >= sizeof(message->payload) ||
-      nxm_string(base + offset, (unsigned)sizeof(message->payload) - offset,
-                 &second) != 0 || second >= sizeof(candidate->abi)) return -EINVAL;
-  if (memcpy(candidate->path, base, first + 1U) != candidate->path ||
-      memcpy(candidate->abi, base + offset, second + 1U) != candidate->abi)
-    return -EIO;
-  if (!nxm_library_path_valid(candidate->path) ||
-      !nxm_library_abi_valid(candidate->abi)) return -EINVAL;
-  return 0;
-}
-
-static int nxm_library_name(struct nxm_state *state,
-                            const struct ipc_message *message) {
-  unsigned id = (unsigned)message->data1;
-  unsigned length = 0U;
-  if (id >= NXMANAGE_LIBRARY_SLOTS ||
-      message->data2 != NXMANAGE_PROTO_VERSION ||
-      nxm_library_name_valid(message->payload, &length) != 0) return -EINVAL;
-  for (unsigned i = 0U; i < NXMANAGE_LIBRARY_SLOTS; ++i) {
-    if (i != id && state->libraries[i].named &&
-        strcmp(state->libraries[i].name, message->payload) == 0) return -EEXIST;
-  }
-  struct nxm_library *library = &state->libraries[id];
-  if (library->named)
-    return strcmp(library->name, message->payload) == 0 ? 0 : -EPERM;
-  for (unsigned i = 0U; i <= length && i < NXMANAGE_LIBRARY_NAME_MAX; ++i)
-    library->name[i] = message->payload[i];
-  library->named = 1;
-  return 0;
-}
-
-static int nxm_library_publish(const struct nxm_library *library) {
-  char key[64];
-  char value[64];
-  int k = snprintf(key, sizeof(key), "%s%s", NXMANAGE_LIBRARY_REGISTRY_PREFIX,
-                   library->name);
-  int v = snprintf(value, sizeof(value), "%s|%s", library->path, library->abi);
-  if (k <= 0 || k >= (int)sizeof(key) || v <= 0 || v >= (int)sizeof(value))
-    return -EOVERFLOW;
-  return OS1_registry_object_set(key, value);
-}
-
-static int nxm_library_register(struct nxm_state *state,
-                                const struct ipc_message *message) {
-  unsigned id = (unsigned)message->data1;
-  if (id >= NXMANAGE_LIBRARY_SLOTS ||
-      message->data2 != NXMANAGE_PROTO_VERSION) return -EINVAL;
-  struct nxm_library *library = &state->libraries[id];
-  if (!library->named) return -EPERM;
-  struct nxm_library candidate = {0};
-  if (nxm_library_unpack(message, &candidate) != 0) return -EINVAL;
-  if (library->active) {
-    if (strcmp(library->path, candidate.path) != 0 ||
-        strcmp(library->abi, candidate.abi) != 0) return -EPERM;
-    return 0;
-  }
-  unsigned char probe = 0U;
-  int present = file_read(candidate.path, &probe, 1U, 0);
-  if (present != 1) return present < 0 ? present : -ENOENT;
-  if (memcpy(library->path, candidate.path, sizeof(library->path)) !=
-          library->path ||
-      memcpy(library->abi, candidate.abi, sizeof(library->abi)) != library->abi)
-    return -EIO;
-  int published = nxm_library_publish(library);
-  if (published != 0) return published;
-  library->active = 1;
-  int logged = printf("[NXMANAGE] library=%s path=%s abi=%s registered\n",
-                      library->name, library->path, library->abi);
-  if (logged < 0) OS1_report_error("nxmanage.uart_library", -EIO);
   return 0;
 }
 
@@ -508,14 +376,6 @@ static void nxm_drain(struct nxm_state *state, int port) {
       int status = nxm_register(state, &request);
       if (status != 0)
         nxm_reply(request.from, (unsigned)request.data1, status);
-    } else if (request.type == NXMANAGE_REQ_LIBRARY_NAME) {
-      int status = nxm_library_name(state, &request);
-      nxm_reply_kind(request.from, (unsigned)request.data1, status,
-                     NXMANAGE_REP_LIBRARY_NAME);
-    } else if (request.type == NXMANAGE_REQ_LIBRARY_REGISTER) {
-      int status = nxm_library_register(state, &request);
-      nxm_reply_kind(request.from, (unsigned)request.data1, status,
-                     NXMANAGE_REP_LIBRARY_REGISTER);
     } else {
       OS1_report_error("nxmanage.unknown_operation", -EPERM);
     }
@@ -614,8 +474,7 @@ static void nxm_supervise_init(struct nxm_state *state) {
     return;
   if (!state->init_started) {
     state->init_started = 1;
-    state->init_pid = (int)nxsystem_image_spawn(
-        NXSYSTEM_IMAGE_CLASS_INIT, state->init_image, PLVL_ROOT, CAP_ALL);
+    state->init_pid = (int)spawn_caps(state->init_exec, PLVL_ROOT, CAP_ALL);
     if (state->init_pid <= 0) {
       OS1_report_error("nxmanage.initializer_spawn", state->init_pid);
       state->init_pid = 0;
@@ -647,7 +506,7 @@ static void nxm_supervise_init(struct nxm_state *state) {
 
 int main(void) {
   struct nxm_state state = {0};
-  if (get_pid() != 1 || nxm_boot_init_image(state.init_image) != 0) {
+  if (get_pid() != 1 || nxm_boot_init_exec(state.init_exec) != 0) {
     OS1_report_error("nxmanage.pid1_boot_config", -EPERM);
     return 1;
   }

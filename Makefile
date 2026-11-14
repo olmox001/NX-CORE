@@ -118,7 +118,7 @@ LDFLAGS_KERN := -nostdlib -static -z noexecstack -T $(HAL_ARCH_DIR)/kernel.ld \
 include build.mk
 -include $(DEPS)
 
-.PHONY: all hal check check-contracts check-sdk-boundary setup-deps require-sdk print-sdk-root clean run boot debug debug-direct disasm symbols test-debug test-nxpax-core test-nxpax-stress help
+.PHONY: all hal check check-contracts check-sdk-boundary check-object-boot-provider check-virtio-ring-layout check-virtio-dma-lifecycle check-gpu-mode-contract check-driver-dma-claim setup-deps require-sdk print-sdk-root clean run boot debug debug-direct disasm symbols test-debug test-nxpax-core test-nxpax-stress help
 all: kernel bootloader
 hal: $(HAL_LIB)
 
@@ -128,7 +128,7 @@ require-sdk:
 print-sdk-root:
 	@tools/resolve-sdk.sh --print
 
-check: require-sdk check-contracts check-sdk-boundary check-object-boot-provider
+check: require-sdk check-contracts check-sdk-boundary check-object-boot-provider check-virtio-ring-layout check-virtio-dma-lifecycle check-gpu-mode-contract check-driver-dma-claim
 	@set -eu; for tool in "$(CC)" "$(LD)" "$(OBJCOPY)" "$(CROSS_COMPILE)nm"; do \
 	  command -v "$$tool" >/dev/null || { echo "missing tool: $$tool" >&2; exit 1; }; done
 	@case "$(ARCH):$$($(CC) -dumpmachine)" in \
@@ -158,6 +158,43 @@ check-object-boot-provider: $(BOOT_ENTRY_HEADER)
 	  fs/object_boot_provider.c test/object_boot_provider_test.c \
 	  -o "$(BUILD_DIR)/host-tests/object_boot_provider_test"
 	@"$(BUILD_DIR)/host-tests/object_boot_provider_test"
+
+check-virtio-ring-layout:
+	@mkdir -p "$(BUILD_DIR)/host-tests"
+	@$(HOST_CC) -std=c11 -Wall -Wextra -Werror -include test/host_kernel_compat.h \
+	  -I$(KERNEL_DIR)/include -I$(KERNEL_DIR)/include/abi -I$(KERNEL_DIR)/include/api \
+	  -I$(HAL_ROOT) -I$(HAL_ROOT)/include -I$(HAL_ARCH_DIR)/include \
+	  test/virtio_ring_layout_test.c -o "$(BUILD_DIR)/host-tests/virtio_ring_layout_test"
+	@"$(BUILD_DIR)/host-tests/virtio_ring_layout_test"
+
+check-virtio-dma-lifecycle:
+	@mkdir -p "$(BUILD_DIR)/host-tests"
+	@$(HOST_CC) -std=c11 -Wall -Wextra -Werror -include test/host_kernel_compat.h \
+	  -I$(KERNEL_DIR)/include -I$(KERNEL_DIR)/include/abi -I$(KERNEL_DIR)/include/api \
+	  -I$(HAL_ROOT) -I$(HAL_ROOT)/include -I$(HAL_ARCH_DIR)/include \
+	  test/virtio_dma_lifecycle_test.c drivers/virtio/virtio_dma.c \
+	  -o "$(BUILD_DIR)/host-tests/virtio_dma_lifecycle_test"
+	@"$(BUILD_DIR)/host-tests/virtio_dma_lifecycle_test"
+
+check-gpu-mode-contract:
+	@mkdir -p "$(BUILD_DIR)/host-tests"
+	@$(HOST_CC) -std=c11 -Wall -Wextra -Werror -include test/host_kernel_compat.h \
+	  -I$(KERNEL_DIR)/include -I$(KERNEL_DIR)/include/abi -I$(KERNEL_DIR)/include/api \
+	  -I$(HAL_ROOT) -I$(HAL_ROOT)/include -I$(HAL_ARCH_DIR)/include \
+	  test/gpu_mode_contract_test.c drivers/gpu/gpu_core.c \
+	  -o "$(BUILD_DIR)/host-tests/gpu_mode_contract_test"
+	@"$(BUILD_DIR)/host-tests/gpu_mode_contract_test"
+
+check-driver-dma-claim:
+	@mkdir -p "$(BUILD_DIR)/host-tests"
+	@$(HOST_CC) -std=c11 -Wall -Wextra -Werror -include test/host_kernel_compat.h \
+	  -I$(KERNEL_DIR)/include -I$(KERNEL_DIR)/include/abi -I$(KERNEL_DIR)/include/api \
+	  -I$(HAL_ROOT) -I$(HAL_ROOT)/include -I$(HAL_ARCH_DIR)/include \
+	  -D_KERNEL_PRINTK_H '-Dpr_info(...)=((void)0)' \
+	  '-Dpr_warn(...)=((void)0)' '-Dpr_err(...)=((void)0)' \
+	  core/hal_bus.c test/driver_dma_claim_test.c \
+	  -o "$(BUILD_DIR)/host-tests/driver_dma_claim_test"
+	@"$(BUILD_DIR)/host-tests/driver_dma_claim_test"
 
 check-sdk-boundary:
 	@set -eu; \

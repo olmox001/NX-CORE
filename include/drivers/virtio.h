@@ -63,6 +63,7 @@ struct virtio_transport_ops {
   uint32_t (*read32)(struct virtio_device *dev, uint32_t offset);
   void (*write32)(struct virtio_device *dev, uint32_t offset, uint32_t val);
   void (*notify)(struct virtio_device *dev, uint32_t queue_idx);
+  int (*set_dma)(struct virtio_device *dev, int enabled);
 };
 
 struct virtio_device {
@@ -74,6 +75,8 @@ struct virtio_device {
   uintptr_t isr_base;
   uintptr_t notify_base;
   uint32_t notify_off_multiplier;
+  uint32_t pci_bdf;
+  uint8_t dma_authorized;
   void *priv;
   spinlock_t lock;
 };
@@ -109,6 +112,20 @@ struct vring_used {
   struct vring_used_elem ring[];
 };
 
+/* Complete split-ring spans, including the optional EVENT_IDX trailer.
+ * Drivers use these sizes for DMA cache maintenance as well as allocation.
+ * Cleaning/invalidating only the four-byte ring header is insufficient on
+ * non-coherent targets once ring entries cross a cache-line boundary. */
+static inline size_t virtio_vring_avail_bytes(uint32_t qsize) {
+  return sizeof(struct vring_avail) +
+         (size_t)qsize * sizeof(uint16_t) + sizeof(uint16_t);
+}
+
+static inline size_t virtio_vring_used_bytes(uint32_t qsize) {
+  return sizeof(struct vring_used) +
+         (size_t)qsize * sizeof(struct vring_used_elem) + sizeof(uint16_t);
+}
+
 /* API */
 static inline uint32_t virtio_read_reg(virtio_handle_t dev, uint32_t offset) {
   return dev->ops->read32(dev, offset);
@@ -141,8 +158,10 @@ void arch_virtio_scan(void);
 int arch_virtio_get_count(uint32_t device_id);
 int arch_virtio_get_device(uint32_t device_id, int index,
                            virtio_handle_t *out_dev, uint32_t *out_irq);
-void virtio_setup_queue(virtio_handle_t dev, uint32_t queue_idx,
-                        uint64_t desc_addr, uint64_t avail_addr,
-                        uint64_t used_addr);
+int virtio_dma_acquire(virtio_handle_t dev);
+int virtio_dma_release(virtio_handle_t dev);
+int virtio_setup_queue(virtio_handle_t dev, uint32_t queue_idx,
+                       uint64_t desc_addr, uint64_t avail_addr,
+                       uint64_t used_addr);
 
 #endif /* _DRIVERS_VIRTIO_H */

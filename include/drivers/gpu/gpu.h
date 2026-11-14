@@ -26,8 +26,9 @@ struct gpu_ops {
   int (*present)(struct gpu_device *dev, const uint32_t *src, int src_w,
                  int src_h, int x, int y, int w, int h);
   void (*destroy)(struct gpu_device *dev);
-  /* Query the host's current preferred display size (what the device
-   * advertises via GET_DISPLAY_INFO).  0 on success.  (GFX-DYN-01 #54) */
+  /* Snapshot the provider's active scanout size. This is the current
+   * hardware presentation target, not the compositor's logical desktop and
+   * not a preferred/advertised host mode. 0 on success. */
   int (*get_display_info)(struct gpu_device *dev, int *width, int *height);
   /* Poll for a host-initiated display-change event.  Returns 1 and fills
    * new_w/new_h when the host resized the output, 0 if nothing changed,

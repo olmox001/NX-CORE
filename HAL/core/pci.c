@@ -11,6 +11,10 @@
 #define NXHAL_PCI_CONFIG_DATA_PORT UINT16_C(0x0cfc)
 #define NXHAL_PCI_ENABLE_BIT UINT32_C(0x80000000)
 #define NXHAL_PCI_COMMAND_OFFSET UINT8_C(0x04)
+#define NXHAL_PCI_COMMAND_IO UINT32_C(0x0001)
+#define NXHAL_PCI_COMMAND_MEMORY UINT32_C(0x0002)
+#define NXHAL_PCI_COMMAND_BUS_MASTER UINT32_C(0x0004)
+#define NXHAL_PCI_COMMAND_MASK UINT32_C(0x0000ffff)
 #define NXHAL_PCI_CLASS_OFFSET UINT8_C(0x08)
 #define NXHAL_PCI_HEADER_OFFSET UINT8_C(0x0c)
 #define NXHAL_PCI_BAR0_OFFSET UINT8_C(0x10)
@@ -429,18 +433,40 @@ static int pci_prepare_primary_bar(uint32_t bdf, struct nxhal_pci_bar *bar) {
   return 0;
 }
 
-static void pci_enable_function(uint32_t bdf) {
+static int pci_command_update(uint32_t bdf, uint32_t set_bits,
+                              uint32_t clear_bits) {
   uint8_t bus;
   uint8_t device;
   uint8_t function;
+  uint32_t value;
   uint32_t command;
 
   if (pci_bdf_decode(bdf, &bus, &device, &function) != 0)
-    return;
-  command = nxhal_pci_config_read(bus, device, function,
-                                  NXHAL_PCI_COMMAND_OFFSET);
+    return -1;
+  value = nxhal_pci_config_read(bus, device, function,
+                                NXHAL_PCI_COMMAND_OFFSET);
+  if (value == NXHAL_PCI_CONFIG_INVALID)
+    return -1;
+  command = value & NXHAL_PCI_COMMAND_MASK;
+  command |= set_bits & NXHAL_PCI_COMMAND_MASK;
+  command &= ~(clear_bits & NXHAL_PCI_COMMAND_MASK);
+  /* The upper 16 bits of the dword are PCI Status and contain write-one-to-
+   * clear fields. Write zero there instead of echoing the readback value. */
   nxhal_pci_config_write(bus, device, function, NXHAL_PCI_COMMAND_OFFSET,
-                         command | UINT32_C(7));
+                         command);
+  return 0;
+}
+
+int nxhal_pci_enable_decode(uint32_t bdf) {
+  return pci_command_update(
+      bdf, NXHAL_PCI_COMMAND_IO | NXHAL_PCI_COMMAND_MEMORY,
+      NXHAL_PCI_COMMAND_BUS_MASTER);
+}
+
+int nxhal_pci_set_bus_master(uint32_t bdf, int enabled) {
+  if (enabled != 0)
+    return pci_command_update(bdf, NXHAL_PCI_COMMAND_BUS_MASTER, 0U);
+  return pci_command_update(bdf, 0U, NXHAL_PCI_COMMAND_BUS_MASTER);
 }
 
 static void pci_fill_device(struct nxhal_device_desc *device, uint32_t bdf,
@@ -467,7 +493,8 @@ static int pci_register_one(uint32_t bdf, uint16_t vendor, uint16_t device_id) {
 
   if (bar_status != 0)
     return -1;
-  pci_enable_function(bdf);
+  if (nxhal_pci_enable_decode(bdf) != 0)
+    return -1;
   pci_fill_device(&device, bdf, vendor, device_id, &bar);
   if (vendor == UINT16_C(0x1af4))
     nxhal_device_name_virtio(device.name, sizeof(device.name), device_id);

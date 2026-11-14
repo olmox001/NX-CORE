@@ -43,6 +43,10 @@ void nxhal_pci_config_write(uint8_t bus, uint8_t device, uint8_t function,
 
 int nxhal_pci_find_device(uint16_t vendor, uint16_t device_id,
                           uint32_t *out_bdf);
+/* Discovery may enable address decoding, but never DMA. Bus mastering is a
+ * separate driver-claim authority that must be granted only after matching. */
+int nxhal_pci_enable_decode(uint32_t bdf);
+int nxhal_pci_set_bus_master(uint32_t bdf, int enabled);
 int nxhal_pci_get_bar(uint32_t bdf, uint32_t bar_index,
                       struct nxhal_pci_bar *out_bar);
 uint8_t nxhal_pci_get_interrupt(uint32_t bdf);

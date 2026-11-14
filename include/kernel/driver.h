@@ -19,6 +19,10 @@
 #define DRV_ANY_ID    0xFFFF  /* wildcard for vendor/device */
 #define DRV_ANY_CLASS 0xFF    /* wildcard for class_code/subclass/prog_if */
 
+/* Driver authority requirements. DMA is granted only after a device is
+ * provisionally claimed by a matching driver and is revoked on probe failure. */
+#define DEVICE_DRIVER_DMA (1u << 0)
+
 struct device_driver {
     const char *name;
 
@@ -30,6 +34,7 @@ struct device_driver {
     uint8_t class_code;
     uint8_t subclass;
     uint8_t prog_if;
+    uint32_t flags; /* DEVICE_DRIVER_* authority requirements */
 
     /* Called once per matching, still-unbound device. Return 0 to claim the
      * device (it becomes bound), non-zero to decline (stays available). */

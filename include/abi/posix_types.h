@@ -303,6 +303,7 @@ struct ipc_message {
  * The original message remains unchanged; packet receives additionally expose
  * the actual count installed by port_send_caps into leading payload ints. */
 #define OS1_SPAWN_REQUEST_VERSION 1U
+#define OS1_SPAWN_PATH_MAX 128U
 /* User addresses are fixed-width across the supported 64-bit architectures.
  * The PROCESS capability identifies the owner; no owner PID is trusted here. */
 struct os1_spawn_request_v1 {

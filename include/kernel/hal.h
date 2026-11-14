@@ -33,9 +33,10 @@ struct hal_device {
      * bus address (pci_bdf) stays valid for further config-space access. */
     uint32_t pci_bdf;
     void *priv;
-    /* Bound driver (set by driver_match_all on a successful probe); NULL while
-     * unbound. Used to avoid probing the same device twice. */
+    /* Bound/claimed driver. Set before probe so authority is never granted to
+     * an unowned device. A failed probe clears it only after DMA revocation. */
     struct device_driver *driver;
+    uint8_t dma_authorized; /* PCI BusMaster granted to the current claim. */
 };
 
 void hal_bus_init(void);

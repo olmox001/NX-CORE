@@ -9,7 +9,7 @@
 const struct fs_ops ext4_fs_ops = {.name = "test-ext4"};
 int console_loglevel = 7;
 
-enum { TEST_RECORDS = 16, TEST_KEY = 64, TEST_VALUE = 96 };
+enum { TEST_RECORDS = 8, TEST_KEY = 64, TEST_VALUE = 128 };
 struct test_record {
   char key[TEST_KEY];
   char value[TEST_VALUE];
@@ -18,7 +18,6 @@ struct test_record {
 static struct test_record records[TEST_RECORDS];
 static unsigned record_count;
 static const char *manager_config;
-static const char *images_config;
 static int forced_registry_failure;
 
 static int text_copy(char *dst, unsigned cap, const char *src) {
@@ -45,10 +44,9 @@ static int same(const char *left, const char *right) {
   return 0;
 }
 
-static void reset_state(const char *manager, const char *images) {
+static void reset_state(const char *manager) {
   record_count = 0U;
   manager_config = manager;
-  images_config = images;
   forced_registry_failure = 0;
   for (unsigned i = 0U; i < TEST_RECORDS; ++i) {
     records[i].key[0] = '\0';
@@ -66,20 +64,13 @@ void procfs_init(void) {}
 
 int vfs_read_file(const char *path, void *buffer, uint32_t size,
                   uint64_t offset) {
-  if (offset != 0U || path == NULL || buffer == NULL)
+  if (offset != 0U || path == NULL || buffer == NULL ||
+      !same(path, "/system/boot/manager.conf") || manager_config == NULL)
     return -1;
-  const char *source = NULL;
-  if (same(path, "/system/boot/manager.conf"))
-    source = manager_config;
-  else if (same(path, "/system/boot/images.conf"))
-    source = images_config;
-  if (source == NULL)
-    return -1;
-
   unsigned length = 0U;
-  for (; length < size && source[length] != '\0'; ++length)
-    ((char *)buffer)[length] = source[length];
-  return source[length] == '\0' ? (int)length : -1;
+  for (; length < size && manager_config[length] != '\0'; ++length)
+    ((char *)buffer)[length] = manager_config[length];
+  return manager_config[length] == '\0' ? (int)length : -1;
 }
 
 int registry_set(const char *key, const char *value, int owner_pid) {
@@ -94,10 +85,9 @@ int registry_set(const char *key, const char *value, int owner_pid) {
 }
 
 int registry_get(const char *key, char *buffer, size_t size) {
-  for (unsigned i = 0U; i < record_count; ++i) {
-    if (same(records[i].key, key))
-      return text_copy(buffer, (unsigned)size, records[i].value);
-  }
+  (void)key;
+  (void)buffer;
+  (void)size;
   return -1;
 }
 
@@ -118,51 +108,37 @@ static int has_record(const char *key, const char *value) {
   return 0;
 }
 
-static int test_catalog_and_init_are_published(void) {
-  reset_state("init=nxinit\n",
-              "init|nxinit|/sbin/nxinit\n"
-              "service|notify|/sys/services/nxntfy_srv\n"
-              "service|shell|/sys/services/nxttyd\n");
+static int test_startup_locator_is_published(void) {
+  reset_state("init=/sbin/nxinit\n");
   if (nx_object_registry_start() != 0)
     return 1;
   if (!has_record(NX_BOOT_REGISTRY_KEY, "/krnl/extension/nxmanageDD"))
     return 2;
-  if (!has_record("system.boot.image.init.nxinit", "/sbin/nxinit"))
-    return 3;
-  if (!has_record("system.boot.image.service.notify",
-                  "/sys/services/nxntfy_srv"))
-    return 4;
-  return has_record(NX_BOOT_INIT_IMAGE_KEY, "nxinit") ? 0 : 5;
+  return has_record(NX_BOOT_INIT_EXEC_KEY, "/sbin/nxinit") ? 0 : 3;
 }
 
-static int test_unknown_init_image_fails_closed(void) {
-  reset_state("init=missing\n",
-              "init|nxinit|/sbin/nxinit\n"
-              "service|notify|/sys/services/nxntfy_srv\n");
+static int test_relative_startup_locator_fails_closed(void) {
+  reset_state("init=sbin/nxinit\n");
   return nx_object_registry_start() != 0 ? 0 : 1;
 }
 
-static int test_invalid_service_image_fails_closed(void) {
-  reset_state("init=nxinit\n",
-              "init|nxinit|/sbin/nxinit\n"
-              "service|escape|/sbin/escape\n");
+static int test_missing_startup_locator_fails_closed(void) {
+  reset_state("init=\n");
   return nx_object_registry_start() != 0 ? 0 : 1;
 }
 
 static int test_registry_failure_fails_closed(void) {
-  reset_state("init=nxinit\n",
-              "init|nxinit|/sbin/nxinit\n"
-              "service|notify|/sys/services/nxntfy_srv\n");
+  reset_state("init=/sbin/nxinit\n");
   forced_registry_failure = 1;
   return nx_object_registry_start() != 0 ? 0 : 1;
 }
 
 int main(void) {
-  if (test_catalog_and_init_are_published() != 0)
+  if (test_startup_locator_is_published() != 0)
     return 1;
-  if (test_unknown_init_image_fails_closed() != 0)
+  if (test_relative_startup_locator_fails_closed() != 0)
     return 2;
-  if (test_invalid_service_image_fails_closed() != 0)
+  if (test_missing_startup_locator_fails_closed() != 0)
     return 3;
   if (test_registry_failure_fails_closed() != 0)
     return 4;

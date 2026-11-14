@@ -58,6 +58,10 @@ static void init_device(virtio_handle_t handle, uint32_t irq, int is_pci) {
   (void)is_pci;
   if (input_dev_count >= MAX_INPUT_DEVS)
     return;
+  if (virtio_dma_acquire(handle) != 0) {
+    pr_err("%s", "VirtIO-Input: DMA claim rejected\n");
+    return;
+  }
 
   struct virtio_input_dev *dev = &input_devs[input_dev_count++];
   dev->handle = handle;
@@ -83,6 +87,9 @@ static void init_device(virtio_handle_t handle, uint32_t irq, int is_pci) {
   if (!qmem) {
     /* DRV-VIRTIO-07: bail out gracefully instead of NULL-dereferencing. */
     pr_err("%s", "VirtIO-Input: failed to allocate virtqueue memory\n");
+    v_write32(dev, VIRTIO_MMIO_STATUS, 0);
+    if (virtio_dma_release(handle) != 0)
+      pr_err("%s", "VirtIO-Input: DMA revoke failed after allocation error\n");
     input_dev_count--;
     return;
   }
@@ -91,14 +98,13 @@ static void init_device(virtio_handle_t handle, uint32_t irq, int is_pci) {
   dev->avail = (struct vring_avail *)((uint8_t *)qmem + INPUT_QSIZE * 16);
   dev->used = (struct vring_used *)((uint8_t *)qmem + 4096);
 
-  /* Use unified HAL API; the device needs PHYSICAL ring addresses. */
-  virtio_setup_queue(handle, 0, virt_to_phys(dev->desc),
-                     virt_to_phys(dev->avail), virt_to_phys(dev->used));
-
   dev->events = (struct virtio_input_event *)pmm_alloc_page_dma();
   if (!dev->events) {
     /* DRV-VIRTIO-07: free the virtqueue memory and bail out gracefully. */
     pr_err("%s", "VirtIO-Input: failed to allocate events buffer\n");
+    v_write32(dev, VIRTIO_MMIO_STATUS, 0);
+    if (virtio_dma_release(handle) != 0)
+      pr_err("%s", "VirtIO-Input: DMA revoke failed after event allocation error\n");
     pmm_free_pages(qmem, 2);
     input_dev_count--;
     return;
@@ -123,21 +129,40 @@ static void init_device(virtio_handle_t handle, uint32_t irq, int is_pci) {
    * first read of this queue sees valid descriptors depends on unrelated
    * cache state on real hardware, and is always fine under QEMU/KVM. */
   hal_cache_clean((void *)dev->desc, INPUT_QSIZE * sizeof(*dev->desc));
-  hal_cache_clean((void *)dev->avail, sizeof(*dev->avail));
+  hal_cache_clean((void *)dev->avail,
+                  virtio_vring_avail_bytes(INPUT_QSIZE));
   hal_mb();
 
-  /* Driver OK */
-  v_write32(dev, VIRTIO_MMIO_STATUS,
-            v_read32(dev, VIRTIO_MMIO_STATUS) | VIRTIO_STATUS_DRIVER_OK);
+  if (virtio_setup_queue(handle, 0, virt_to_phys(dev->desc),
+                         virt_to_phys(dev->avail),
+                         virt_to_phys(dev->used)) != 0) {
+    pr_err("%s", "VirtIO-Input: queue setup rejected without DMA ownership\n");
+    v_write32(dev, VIRTIO_MMIO_STATUS, 0);
+    if (virtio_dma_release(handle) != 0) {
+      pr_err("%s", "VirtIO-Input: DMA revoke failed; queue memory quarantined\n");
+      return;
+    }
+    pmm_free_page(dev->events);
+    pmm_free_pages(dev->desc, 2);
+    dev->events = NULL;
+    dev->desc = NULL;
+    dev->avail = NULL;
+    dev->used = NULL;
+    input_dev_count--;
+    return;
+  }
 
-  /* Register one handler per IRQ line.  virtio_input_handler() scans all
-   * active input devices on the acknowledged line, so keyboard and mouse may
-   * safely share one PCI INTx/GIC IRQ without a second irq_register() call. */
+  /* Register the IRQ before DRIVER_OK/notify so an immediately delivered
+   * device event always has a live handler. */
   if (!virtio_input_irq_has_handler(irq)) {
     if (irq_register(irq, virtio_input_handler, NULL) != 0) {
       pr_err("virtio-input: cannot register IRQ %u; disabling provider\n",
              irq);
       v_write32(dev, VIRTIO_MMIO_STATUS, 0);
+      if (virtio_dma_release(handle) != 0) {
+        pr_err("%s", "VirtIO-Input: DMA revoke failed; queue memory quarantined\n");
+        return;
+      }
       pmm_free_page(dev->events);
       pmm_free_pages(dev->desc, 2);
       dev->events = NULL;
@@ -153,9 +178,11 @@ static void init_device(virtio_handle_t handle, uint32_t irq, int is_pci) {
             irq);
   }
 
-  /* Publish the device before notifying it: an immediate interrupt must see
-   * active=1 when the shared handler scans input_devs[]. */
+  /* Publish before DRIVER_OK/notify: an immediate interrupt must see active=1
+   * when the shared handler scans input_devs[]. */
   dev->active = 1;
+  v_write32(dev, VIRTIO_MMIO_STATUS,
+            v_read32(dev, VIRTIO_MMIO_STATUS) | VIRTIO_STATUS_DRIVER_OK);
   v_notify(dev, 0);
 }
 
@@ -183,7 +210,8 @@ static void virtio_input_handler(uint32_t irq, void *data) {
      * unrelated cache state, never reproducible under QEMU/KVM's emulated
      * (always-coherent) memory: exactly the "works only after moving the
      * mouse enough times" symptom this device's IRQ was implicated in. */
-    hal_cache_invalidate((void *)dev->used, sizeof(*dev->used));
+    hal_cache_invalidate((void *)dev->used,
+                         virtio_vring_used_bytes(INPUT_QSIZE));
 
     while (dev->last_used_idx != dev->used->idx) {
       struct vring_used_elem *e =
@@ -219,7 +247,8 @@ static void virtio_input_handler(uint32_t irq, void *data) {
      * instead of per-iteration: avail is only consumed by the device on
      * the v_notify() below, not before. */
     if (processed_count > 0) {
-      hal_cache_clean((void *)dev->avail, sizeof(*dev->avail));
+      hal_cache_clean((void *)dev->avail,
+                      virtio_vring_avail_bytes(INPUT_QSIZE));
       hal_mb();
     }
 

@@ -9,6 +9,7 @@ KERN_C_SOURCES = \
     $(KERNEL_DIR)/core/hal_core_adapter.c \
     $(KERNEL_DIR)/core/boot_memory.c \
     $(KERNEL_DIR)/core/object.c \
+    $(KERNEL_DIR)/core/console_route.c \
     $(KERNEL_DIR)/core/object_boot.c \
     $(KERNEL_DIR)/fs/object_boot_provider.c \
     $(KERNEL_DIR)/resources/display.c \
@@ -28,6 +29,7 @@ KERN_C_SOURCES = \
     $(KERNEL_DIR)/drivers/block/ramdisk.c \
     $(KERNEL_DIR)/drivers/virtio/virtio_blk.c \
     $(KERNEL_DIR)/drivers/virtio/virtio_input.c \
+    $(KERNEL_DIR)/drivers/virtio/virtio_dma.c \
     $(KERNEL_DIR)/drivers/gpu/virtio_gpu.c \
     $(KERNEL_DIR)/drivers/gpu/gpu_core.c \
     $(KERNEL_DIR)/drivers/usb/usb_core.c \

@@ -3,9 +3,10 @@
 
 #include <kernel/nx_contract.h>
 #include <kernel/types.h>
+#include <object.h>
 
-#define MAX_KEY_LEN 64
-#define MAX_VAL_LEN 128
+#define MAX_KEY_LEN OS1_REGISTRY_KEY_MAX
+#define MAX_VAL_LEN OS1_REGISTRY_VALUE_MAX
 
 /* Registry Operations */
 #define REG_OP_READ 0

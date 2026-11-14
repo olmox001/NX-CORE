@@ -448,12 +448,18 @@ static int vgpu_get_display_info(struct gpu_device *dev, int *width,
                                  int *height) {
   if (!dev || !dev->priv)
     return -1;
-  struct virtio_gpu_state *priv = (struct virtio_gpu_state *)dev->priv;
   uint64_t flags;
   spin_lock_irqsave(&gpu_lock, &flags);
-  int r = vgpu_query_display_info(priv, width, height);
+  int current_width = dev->width;
+  int current_height = dev->height;
   spin_unlock_irqrestore(&gpu_lock, flags);
-  return r;
+  if (current_width <= 0 || current_height <= 0)
+    return -1;
+  if (width)
+    *width = current_width;
+  if (height)
+    *height = current_height;
+  return 0;
 }
 
 /* Poll the device-config events register for a host-initiated display change.
@@ -512,6 +518,10 @@ static int vgpu_release_resources(struct gpu_device *dev,
     /* Do not free memory while the device may still DMA into it.  This is an
      * intentional quarantine/leak on reset failure, not a use-after-free. */
     pr_err("%s", "VirtIO-GPU: reset did not quiesce; DMA memory quarantined\n");
+    return -1;
+  }
+  if (priv && priv->handle && virtio_dma_release(priv->handle) != 0) {
+    pr_err("%s", "VirtIO-GPU: DMA revoke failed; DMA memory quarantined\n");
     return -1;
   }
 
@@ -669,6 +679,10 @@ void virtio_gpu_init(void) {
     return;
   }
   pr_info("VirtIO-GPU: Found device (IRQ %u)\n", irq);
+  if (virtio_dma_acquire(dev_handle) != 0) {
+    pr_err("%s", "VirtIO-GPU: DMA claim rejected\n");
+    return;
+  }
 
   struct gpu_device *dev = kmalloc(sizeof(struct gpu_device));
   struct virtio_gpu_state *priv = kmalloc(sizeof(struct virtio_gpu_state));
@@ -677,6 +691,8 @@ void virtio_gpu_init(void) {
       kfree(dev);
     if (priv)
       kfree(priv);
+    if (virtio_dma_release(dev_handle) != 0)
+      pr_err("%s", "VirtIO-GPU: DMA revoke failed after allocation error\n");
     return;
   }
   memset(dev, 0, sizeof(*dev));
@@ -727,8 +743,13 @@ void virtio_gpu_init(void) {
   priv->avail = (struct vring_avail *)((uint8_t *)qmem + priv->qsize * 16u);
   priv->used = (struct vring_used *)((uint8_t *)qmem + 4096u);
 
-  virtio_setup_queue(dev_handle, 0, virt_to_phys(priv->desc),
-                     virt_to_phys(priv->avail), virt_to_phys(priv->used));
+  if (virtio_setup_queue(dev_handle, 0, virt_to_phys(priv->desc),
+                         virt_to_phys(priv->avail),
+                         virt_to_phys(priv->used)) != 0) {
+    pr_err("%s", "VirtIO-GPU: control queue setup rejected\n");
+    vgpu_release_resources(dev, priv);
+    return;
+  }
 
   priv->cmd_buf = pmm_alloc_page_dma();
   priv->resp_buf = pmm_alloc_page_dma();

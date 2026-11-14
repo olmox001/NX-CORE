@@ -199,10 +199,24 @@ static void legacy_notify(struct virtio_device *dev, uint32_t queue_idx) {
     hal_outw((uint16_t)dev->base + UINT16_C(0x10), (uint16_t)queue_idx);
 }
 
+static int pci_set_dma(struct virtio_device *dev, int enabled) {
+  if (dev == NULL)
+    return -1;
+  return nxhal_pci_set_bus_master(dev->pci_bdf, enabled);
+}
+
 static const struct virtio_transport_ops modern_ops = {
-    modern_read32, modern_write32, modern_notify};
+    .read32 = modern_read32,
+    .write32 = modern_write32,
+    .notify = modern_notify,
+    .set_dma = pci_set_dma,
+};
 static const struct virtio_transport_ops legacy_ops = {
-    legacy_read32, legacy_write32, legacy_notify};
+    .read32 = legacy_read32,
+    .write32 = legacy_write32,
+    .notify = legacy_notify,
+    .set_dma = pci_set_dma,
+};
 
 static int virtio_storage_prepare(uint32_t device_count) {
   size_t bytes;
@@ -374,6 +388,7 @@ static int virtio_pci_init_device(const struct nxhal_device_desc *hdev) {
   vdev->base = hdev->base;
   vdev->irq = hdev->irq;
   vdev->device_id = hdev->device_id;
+  vdev->pci_bdf = hdev->pci_bdf;
   vdev->is_legacy = modern == 0;
   if (modern != 0) {
     if (virtio_scan_pci_caps(vdev, hdev->pci_bdf) != 0)
@@ -505,9 +520,11 @@ uint32_t virtio_queue_set_size(virtio_handle_t dev, uint32_t queue_idx,
   return qsize;
 }
 
-void virtio_setup_queue(virtio_handle_t dev, uint32_t queue_idx,
-                        uint64_t desc_addr, uint64_t avail_addr,
-                        uint64_t used_addr) {
+int virtio_setup_queue(virtio_handle_t dev, uint32_t queue_idx,
+                       uint64_t desc_addr, uint64_t avail_addr,
+                       uint64_t used_addr) {
+  if (dev == NULL || dev->dma_authorized == UINT8_C(0))
+    return -1;
   if (dev->ops == &modern_ops) {
     modern_write32(dev, VIRTIO_MMIO_QUEUE_SEL, queue_idx);
     /* Modern registers: desc(0x20), avail(0x28), used(0x30) */
@@ -524,13 +541,15 @@ void virtio_setup_queue(virtio_handle_t dev, uint32_t queue_idx,
     virtio_mmio_write32((uint64_t)dev->base + UINT64_C(0x34),
                         (uint32_t)(used_addr >> 32U));
     virtio_mmio_write16((uint64_t)dev->base + UINT64_C(0x1c), UINT16_C(1));
+    return 0;
   } else {
     uint32_t pfn = (uint32_t)(desc_addr >> 12);
     nxhal_diag_info("VirtIO: Setting Legacy PFN 0x%x for queue %u at 0x%lx\n", pfn,
             queue_idx, dev->base);
     if (dev->base > UINT16_MAX - UINT16_C(0x0e))
-      return;
+      return -1;
     hal_outw((uint16_t)dev->base + UINT16_C(0x0e), (uint16_t)queue_idx);
     hal_outl((uint16_t)dev->base + UINT16_C(0x08), pfn);
+    return 0;
   }
 }

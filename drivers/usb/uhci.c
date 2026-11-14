@@ -406,7 +406,8 @@ static struct device_driver uhci_driver = {
     .device = DRV_ANY_ID,
     .class_code = 0x0C,
     .subclass = 0x03,
-    .prog_if = 0x00, /* UHCI */
+    .prog_if = 0x00,
+    .flags = DEVICE_DRIVER_DMA, /* UHCI */
     .probe = uhci_probe,
 };
 

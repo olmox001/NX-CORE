@@ -414,7 +414,8 @@ static struct device_driver ehci_driver = {
     .device = DRV_ANY_ID,
     .class_code = 0x0C,
     .subclass = 0x03,
-    .prog_if = 0x20, /* EHCI */
+    .prog_if = 0x20,
+    .flags = DEVICE_DRIVER_DMA, /* EHCI */
     .probe = ehci_probe,
 };
 

@@ -9,10 +9,11 @@
 #define NX_CORE_OBJECT_BOOT_H
 
 #include <kernel/nx_contract.h>
+#include <posix_types.h>
 
 #define NX_BOOT_REGISTRY_KEY "system.boot.entry"
-#define NX_BOOT_INIT_IMAGE_KEY "system.boot.init_image"
-#define NX_BOOT_EXEC_PATH_MAX 96U
+#define NX_BOOT_INIT_EXEC_KEY "system.boot.init"
+#define NX_BOOT_EXEC_PATH_MAX OS1_SPAWN_PATH_MAX
 
 /* Mount concrete storage behind the unified object namespace. */
 void nx_object_storage_mount(void);

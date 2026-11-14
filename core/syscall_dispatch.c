@@ -334,7 +334,7 @@ static long dispatch_spawn(const char *path, uint8_t level, uint32_t caps,
 struct spawn_user_copy {
   struct os1_spawn_request_v1 request;
   struct spawn_options options;
-  char path[128];
+  char path[OS1_SPAWN_PATH_MAX];
   char text[SPAWN_MAX_ARGS][SPAWN_ARG_LEN];
   uint64_t pointers[SPAWN_MAX_ARGS];
   struct spawn_redir redirections[SPAWN_MAX_REDIR];

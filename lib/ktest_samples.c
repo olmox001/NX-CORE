@@ -40,6 +40,7 @@
 #include <kernel/sched.h>
 #include <kernel/string.h>
 #include <kernel/kmalloc.h>
+#include <kernel/object.h>
 #include <kernel/gfx_chrome.h>
 #include <kernel/gfx_surface.h>
 #include <kernel/vfs.h>
@@ -75,6 +76,20 @@ KTEST_CASE(test_math_basic) {
     int a = 10;
     int b = 20;
     KASSERT_EQ(a + b, 30);
+}
+
+/* A self-rendered child must keep implicit stdout/stderr on the controlling
+ * terminal inherited from its launcher, never on its own pixel surface. */
+KTEST_CASE(test_console_route_self_rendered_ctty) {
+    KASSERT_EQ(object_console_output_window(1, 37, 12), 12);
+    KASSERT_EQ(object_console_output_window(1, 37, -1), -1);
+}
+
+/* A text process uses its own text window first and falls back to the
+ * controlling terminal when it does not own one. */
+KTEST_CASE(test_console_route_plain_text) {
+    KASSERT_EQ(object_console_output_window(0, 37, 12), 37);
+    KASSERT_EQ(object_console_output_window(0, -1, 12), 12);
 }
 
 /* Force the freestanding compiler-runtime div/mod path with non-constant

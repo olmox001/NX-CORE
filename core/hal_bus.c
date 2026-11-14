@@ -35,6 +35,7 @@
 #include <kernel/string.h>
 #include <kernel/printk.h>
 #include <drivers/virtio.h>
+#include <hal/pci.h>
 
 #define MAX_HAL_DEVICES 64
 
@@ -158,6 +159,19 @@ static int driver_matches(const struct device_driver *drv,
     return 1;
 }
 
+static int driver_dma_transition(struct hal_device *dev,
+                                 const struct device_driver *drv,
+                                 int enabled) {
+    if (dev == NULL || drv == NULL) return -1;
+    if (dev->bus_type != HAL_BUS_TYPE_PCI ||
+        (drv->flags & DEVICE_DRIVER_DMA) == 0U)
+        return 0;
+    if (nxhal_pci_set_bus_master(dev->pci_bdf, enabled) != 0)
+        return -1;
+    dev->dma_authorized = enabled != 0 ? UINT8_C(1) : UINT8_C(0);
+    return 0;
+}
+
 void driver_register(struct device_driver *drv) {
     if (!drv) return;
     drv->next = driver_list;
@@ -169,13 +183,24 @@ void driver_match_all(void) {
         struct hal_device *dev = &hal_devices[i];
         if (dev->driver) continue; /* already bound */
         for (struct device_driver *drv = driver_list; drv; drv = drv->next) {
-            if (!driver_matches(drv, dev)) continue;
-            if (drv->probe && drv->probe(dev) == 0) {
-                dev->driver = drv;
+            if (dev->driver != NULL) continue;
+            if (!driver_matches(drv, dev) || drv->probe == NULL) continue;
+            dev->driver = drv;
+            if (driver_dma_transition(dev, drv, 1) != 0) {
+                dev->driver = NULL;
+                continue;
+            }
+            if (drv->probe(dev) == 0) {
                 pr_info("HAL: bound driver '%s' to device '%s'\n",
                         drv->name, dev->name);
-                break; /* device claimed */
+                continue;
             }
+            if (driver_dma_transition(dev, drv, 0) != 0) {
+                pr_err("HAL: DMA revoke failed for '%s'; device '%s' quarantined\n",
+                       drv->name, dev->name);
+                continue;
+            }
+            dev->driver = NULL;
         }
     }
 }
@@ -201,6 +226,8 @@ void hal_register_device(struct hal_device *dev) {
     }
     
     hal_devices[hal_device_count] = *dev;
+    hal_devices[hal_device_count].driver = NULL;
+    hal_devices[hal_device_count].dma_authorized = UINT8_C(0);
     pr_info("HAL: Registered device '%s' (Bus=%d, ID=%04x:%04x, Class=%02x:%02x:%02x, Base=0x%lx, IRQ=%u)\n",
             dev->name, dev->bus_type, dev->vendor_id, dev->device_id,
             dev->class_code, dev->subclass, dev->prog_if, dev->base, dev->irq);

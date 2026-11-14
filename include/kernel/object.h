@@ -100,6 +100,12 @@ long sys_cap_query(int handle) NX_MUST_USE;
 long sys_cap_grant(int target_pid, int handle, uint32_t rights) NX_MUST_USE;
 long sys_object_read(int handle, void *ubuf, size_t n) NX_MUST_USE;
 long sys_object_write(int handle, const void *ubuf, size_t n) NX_MUST_USE;
+/* Select the graphical destination of an implicit CONSOLE write.  A
+ * self-rendered process keeps stdout/stderr on its inherited ctty instead of
+ * drawing text over its own pixel surface; a detached process returns -1 so
+ * window_text_write keeps the UART mirror only. */
+int object_console_output_window(int self_rendered, int own_window,
+                                 int ctty_window) NX_MUST_USE;
 long sys_object_wait(int handle, long arg) NX_MUST_USE;
 long sys_object_ctl(int handle, int cmd, long arg) NX_MUST_USE;
 /* POSIX lseek(2) on a handle: FILE repositions its byte offset per 'whence'

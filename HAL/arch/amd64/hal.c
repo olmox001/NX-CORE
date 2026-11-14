@@ -4,8 +4,8 @@
  *
  * Responsibilities:
  *   - amd64_pci_callback: called by pci_enumerate for each discovered PCI
- *     function; enables Bus Master + I/O + Memory access, reads BAR0 and BAR4,
- *     translates VirtIO device IDs, assigns the IRQ, and registers the device
+ *     function; enables address decoding with BusMaster explicitly disabled,
+ *     reads BAR0/BAR4, translates VirtIO device IDs, assigns the IRQ, and registers the device
  *     with the HAL device table via hal_register_device.
  *   - arch_bus_scan: invokes pci_enumerate(amd64_pci_callback) to build the
  *     HAL device list.
@@ -107,16 +107,6 @@ static int amd64_pci_prepare_bar(uint32_t bdf, int modern,
   return 0;
 }
 
-static void amd64_pci_enable(uint32_t bdf) {
-  uint8_t bus = (uint8_t)(bdf >> 16U);
-  uint8_t device = (uint8_t)(bdf >> 8U);
-  uint8_t function = (uint8_t)bdf;
-  uint32_t command = nxhal_pci_config_read(bus, device, function, 0x04U);
-
-  nxhal_pci_config_write(bus, device, function, 0x04U,
-                         command | UINT32_C(7));
-}
-
 static void amd64_pci_translate_virtio(struct nxhal_device_desc *dev,
                                        uint16_t raw_device_id) {
   uint8_t bus;
@@ -155,7 +145,8 @@ static int amd64_pci_callback(uint32_t bdf, uint16_t vendor,
                device_id >= UINT16_C(0x1041);
 
   amd64_pci_fill_identity(&dev, bdf, vendor, device_id);
-  amd64_pci_enable(bdf);
+  if (nxhal_pci_enable_decode(bdf) != 0)
+    return -1;
   if (amd64_pci_prepare_bar(bdf, modern, &dev) != 0)
     return -1;
   amd64_pci_translate_virtio(&dev, device_id);
