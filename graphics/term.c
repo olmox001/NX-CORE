@@ -546,14 +546,6 @@ void term_write(struct terminal *t, struct gl_surface *surf, const char *buf,
   term_draw_cursor(t, surf, char_w, char_h);
 }
 
-void term_set_focus(struct terminal *t, struct gl_surface *surf, int focused) {
-  if (focused == t->focused)
-    return;
-  if (!focused)
-    term_clear_caret(t, surf);
-  t->focused = focused;
-}
-
 void term_clear_caret(struct terminal *t, struct gl_surface *surf) {
   if (!surf || !surf->buffer)
     return;

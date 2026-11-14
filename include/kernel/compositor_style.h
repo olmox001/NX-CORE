@@ -97,10 +97,8 @@ enum {
   BG_COUNT
 };
 
-/* Active accessors (read each frame by the compositor). */
-const compositor_style_t *compositor_style_active(void);
+/* Transitional theme accessor still consumed by legacy window storage. */
 const compositor_theme_t *compositor_theme_active(void);
-const compositor_background_t *compositor_background_active(void);
 
 /* Select a preset by id; returns 0 on success, -1 if out of range.  Marks the
  * compositor dirty so the change is visible immediately. */

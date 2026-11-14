@@ -1,13 +1,12 @@
 /*
  * kernel/graphics/compositor_style.c
- * Compositor appearance presets (GFX-DYN-01 / DIR-07).
  *
- * Policy / Style / Theme / Background are kept separate (see
- * compositor_style.h). This file holds the built-in presets and the active
- * selection.  The compositor reads
- * compositor_style_active()/compositor_theme_active()/
- * compositor_background_active() each frame; switching a preset marks the whole
- * desktop dirty so the change shows immediately.
+ * Transitional compatibility state for legacy style/theme syscalls.
+ *
+ * Ordinary appearance policy belongs to userland. The remaining kernel window
+ * compatibility path still consumes the active theme and title-bar height, so
+ * those values remain here until that path is cut over to resource/object
+ * mechanisms.
  */
 #include <kernel/compositor_style.h>
 /* Bootstrap/legacy kernel compositor must build without the userland SDK.
@@ -116,79 +115,12 @@ static const compositor_theme_t themes[THEME_COUNT] = {
                     .accent = 0xFF0A84FF},
 };
 
-/* Built-in backgrounds, indexed by BG_* ids.  Same logic the desktop
- * gradient used back when it lived on compositor_theme_t (bg_top/bg_bottom
- * as plain literal colours, no derivation formula) — just one triplet per
- * background instead of one shared pair for both themes.  Every entry is a
- * real two-stop gradient (darker/muted top, richer/lighter bottom). */
-static const compositor_background_t backgrounds[BG_COUNT] = {
-    [BG_BLACK] = {.bg_color = 0xFF121212,
-                  .bg_top = 0xFF121212,
-                  .bg_bottom = 0xFF181818}, /* near-black anchor */
-    [BG_RED] = {.bg_color = 0xFFB33A3A,
-                .bg_top = 0xFF933030,
-                .bg_bottom = 0xFFFF5454}, /* terracotta */
-    [BG_GREEN] = {.bg_color = 0xFF3E8E5B,
-                  .bg_top = 0xFF33744B,
-                  .bg_bottom = 0xFF5ACE84}, /* forest emerald */
-    [BG_YELLOW] = {.bg_color = 0xFFC9A227,
-                   .bg_top = 0xFFA58520,
-                   .bg_bottom = 0xFFFFEB39}, /* amber gold */
-    /* the original desktop gradient (was on compositor_theme_t); default
-       background. */
-    [BG_BLUE] = {.bg_color = 0xFF143060,
-                 .bg_top = 0xFF142850,
-                 .bg_bottom = 0xFF1450A0}, /* nexs */
-    [BG_MAGENTA] = {.bg_color = 0xFF8E44AD,
-                    .bg_top = 0xFF74388E,
-                    .bg_bottom = 0xFFCE63FB}, /* amethyst */
-    [BG_CYAN] = {.bg_color = 0xFF2A9D8F,
-                 .bg_top = 0xFF228175,
-                 .bg_bottom = 0xFF3DE4CF}, /* teal */
-    [BG_WHITE] = {.bg_color = 0xFFECEAE5U,
-                  .bg_top = 0xFFDDDAD4,
-                  .bg_bottom = 0xFFF4F1E9}, /* warm off-white */
-    [BG_GRAY] = {.bg_color = 0xFFBEC1BEU,
-                 .bg_top = 0xFFACB0AE,
-                 .bg_bottom = 0xFFD5D7D2}, /* cool light gray */
-    [BG_BRIGHT_RED] = {.bg_color = 0xFFE8604F,
-                       .bg_top = 0xFFBE4F41,
-                       .bg_bottom = 0xFFFF8B73}, /* coral */
-    [BG_BRIGHT_GREEN] = {.bg_color = 0xFF52B788,
-                         .bg_top = 0xFF439670,
-                         .bg_bottom = 0xFF77FFC5}, /* mint */
-    [BG_BRIGHT_YELLOW] = {.bg_color = 0xFFF2C94C,
-                          .bg_top = 0xFFC6A53E,
-                          .bg_bottom = 0xFFFFFF6E}, /* soft gold */
-    [BG_BRIGHT_BLUE] = {.bg_color = 0xFF4A78C0,
-                        .bg_top = 0xFF3D629D,
-                        .bg_bottom =
-                            0xFF6BAEFF}, /* sky, distinct from nexs blue */
-    [BG_BRIGHT_MAGENTA] = {.bg_color = 0xFFB07CD1,
-                           .bg_top = 0xFF9066AB,
-                           .bg_bottom = 0xFFFFB4FF}, /* orchid */
-    [BG_BRIGHT_CYAN] = {.bg_color = 0xFF56C9C9,
-                        .bg_top = 0xFF47A5A5,
-                        .bg_bottom = 0xFF7DFFFF}, /* aqua */
-    [BG_BRIGHT_WHITE] = {.bg_color = 0xFFF7F5F0U,
-                         .bg_top = 0xFFE9E6DE,
-                         .bg_bottom = 0xFFFCFAF4}, /* creamy off-white */
-};
-
 static int active_style = STYLE_MINIMAL;
 static int active_theme = THEME_DARK;
-static int active_background = BG_BLUE; /* default: the nexs gradient */
-
-const compositor_style_t *compositor_style_active(void) {
-  return &styles[active_style];
-}
+static int active_background = BG_BLUE;
 
 const compositor_theme_t *compositor_theme_active(void) {
   return &themes[active_theme];
-}
-
-const compositor_background_t *compositor_background_active(void) {
-  return &backgrounds[active_background];
 }
 
 int compositor_titlebar_height(void) {

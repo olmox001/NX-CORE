@@ -59,10 +59,6 @@ int term_resize(struct terminal *t, int cols, int rows) NX_MUST_USE;
 void term_write(struct terminal *t, struct gl_surface *surf, const char *buf,
                 size_t count);
 
-/* Update focus: on focus loss the caret is erased; the focus flag gates whether
- * term_write draws a caret. */
-void term_set_focus(struct terminal *t, struct gl_surface *surf, int focused);
-
 /* Erase the caret if currently shown (idempotent). */
 void term_clear_caret(struct terminal *t, struct gl_surface *surf);
 

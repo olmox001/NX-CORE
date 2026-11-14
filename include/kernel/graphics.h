@@ -15,24 +15,14 @@ struct process;
 int graphics_screen_surface(struct gl_surface *out) NX_MUST_USE;
 int graphics_present_argb8888(const uint32_t *pixels, int width, int height,
                               int stride, size_t pixel_capacity) NX_MUST_USE;
-void graphics_swap_buffers(void);
-void graphics_draw_pixel(uint32_t x, uint32_t y, uint32_t color);
 void graphics_draw_rect(uint32_t x, uint32_t y, uint32_t w, uint32_t h,
                         uint32_t color);
-void graphics_draw_char(uint32_t x, uint32_t y, uint32_t codepoint, uint32_t color);
-void graphics_draw_line(uint32_t x0, uint32_t y0, uint32_t x1, uint32_t y1,
-                        uint32_t color);
-void graphics_clear(uint32_t color);
 
 /* Font/String API */
 int graphics_char_width(uint32_t codepoint) NX_MUST_USE;
-int graphics_string_width(const char *str) NX_MUST_USE;
 int utf8_decode(const char *s, size_t len, uint32_t *code) NX_MUST_USE;
 int graphics_font_height(void) NX_MUST_USE;
-int graphics_font_ascent(void) NX_MUST_USE;
 int graphics_font_max_width(void) NX_MUST_USE;
-void graphics_draw_string(uint32_t x, uint32_t y, const char *str,
-                          uint32_t color);
 int sys_set_font(void *data, size_t size) NX_MUST_USE;
 
 /* Compositor API */

@@ -5,10 +5,10 @@
  * Role:
  *   Per-glyph alpha-masked blit from a pre-rasterised bitmap font embedded
  *   via <graphics/default_font.h> (Rewir-Light.ttf, compiled to a C array).
- *   Provides gl_draw_char / gl_draw_string for use by compositor.c's terminal
- *   emulator, and exports font metric queries (height, ascent, max width).
- *   Also implements sys_set_font(), the syscall entry point (syscall 253) that
- *   allows userland to replace the active font at runtime.
+ *   Provides gl_draw_char / gl_draw_string for the legacy terminal path and
+ *   panic/fault display, plus the height/max-width metrics still consumed by
+ *   legacy window storage. It also implements sys_set_font(), the transitional
+ *   font-loading syscall entry point.
  *
  * Font state:
  *   The singleton current_font struct holds a font_header (magic, first_char,
@@ -222,7 +222,7 @@ void gl_draw_char(struct gl_surface *surf, int x, int y, uint32_t codepoint,
  * Param: codepoint — Unicode scalar value.
  * Returns advance width in pixels from the active font's glyph_info, or 0 if
  * the codepoint is outside [first_char, first_char+num_chars).
- * Used by gl_draw_string and graphics_string_width to advance the cursor.
+ * Used internally by gl_draw_string to advance the cursor.
  *
  * Locking: the active font is read under font_lock (GFX-FONT-01).
  */
@@ -287,82 +287,6 @@ void gl_draw_string(struct gl_surface *surf, int x, int y, const char *str,
   }
 }
 
-void gl_draw_string_clipped(struct gl_surface *surf, int x, int y,
-                            const char *str, uint32_t color, int cx1, int cy1,
-                            int cx2, int cy2) {
-  if (!surf || !str)
-    return;
-
-  int cursor_x = x;
-  uint32_t codepoint;
-  int consumed;
-  size_t rem = 0;
-  const char *p = str;
-  while (*p) { p++; rem++; }
-
-  while (*str) {
-    consumed = utf8_decode(str, rem, &codepoint);
-    if (consumed <= 0) {
-        str++;
-        rem--;
-        continue;
-    }
-    size_t step = (size_t)consumed;
-    if (step > rem) {
-      str++;
-      rem--;
-      continue;
-    }
-    gl_draw_char_clipped(surf, cursor_x, y, codepoint, color, cx1, cy1, cx2, cy2);
-    cursor_x += graphics_char_width(codepoint);
-    str += step;
-    rem -= step;
-  }
-}
-
-/*
- * graphics_string_width - compute pixel width of a UTF-8 string.
- *
- * Param: str — null-terminated UTF-8 string (NULL-safe: returns 0).
- * Sums graphics_char_width for each decoded codepoint.  Mirrors the cursor
- * advance in gl_draw_string so callers can centre text (e.g. title bar).
- *
- * Locking: the active font is read under font_lock (GFX-FONT-01).
- */
-/*
- * Get string width in pixels (UTF-8 supported)
- */
-int graphics_string_width(const char *str) {
-  if (!str)
-    return 0;
-
-  int width = 0;
-  uint32_t codepoint;
-  int consumed;
-  size_t rem = 0;
-  const char *p = str;
-  while (*p) { p++; rem++; }
-
-  while (*str) {
-    consumed = utf8_decode(str, rem, &codepoint);
-    if (consumed <= 0) {
-        str++;
-        rem--;
-        continue;
-    }
-    size_t step = (size_t)consumed;
-    if (step > rem) {
-      str++;
-      rem--;
-      continue;
-    }
-    width += graphics_char_width(codepoint);
-    str += step;
-    rem -= step;
-  }
-  return width;
-}
-
 /*
  * graphics_font_height - return the total line height of the active font.
  *
@@ -389,25 +313,6 @@ int graphics_font_height(void) {
     int h = current_font->header.ascent + current_font->header.descent;
     spin_unlock_irqrestore(&font_lock, flags);
     return h > 0 ? h : (FONT_ASCENT + FONT_DESCENT);
-}
-
-/*
- * graphics_font_ascent - return the ascent of the active font in pixels.
- *
- * Ascent is the distance from the baseline to the top of the tallest glyph.
- * Used in gl_draw_char to compute start_y = y + ascent + gi->y0.
- *
- * Locking: reads current_font under font_lock (GFX-FONT-01).
- */
-/*
- * Get font ascent
- */
-int graphics_font_ascent(void) {
-    uint64_t flags;
-    spin_lock_irqsave(&font_lock, &flags);
-    int a = current_font->header.ascent;
-    spin_unlock_irqrestore(&font_lock, flags);
-    return a;
 }
 
 /*

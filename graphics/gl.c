@@ -11,7 +11,6 @@
  * Primitives:
  *   gl_clear          — flood-fill entire surface with a solid colour.
  *   gl_draw_pixel     — write one pixel with bounds check.
- *   gl_draw_line      — Bresenham integer line (delegates to gl_draw_pixel).
  *   gl_draw_rect_fill — filled axis-aligned rectangle with clip-to-surface.
  *   gl_blit           — composite one surface onto another at (dx, dy), with
  *                       per-pixel Porter-Duff "src over" alpha blending.
@@ -32,10 +31,8 @@
  *   compositor_lock held (as compositor_render_internal does), but they must
  *   not be called from hard-IRQ context without that protection.
  *
- * Compatibility:
- *   gl_draw_rect and gl_swizzle_bgr complete the declared internal surface
- *   contract. They are kernel primitives only; they do not expose OpenGL to
- *   applications, which remains a userland personality.
+ * These are kernel-internal surface primitives only; application graphics
+ * remain a userland responsibility.
  */
 #include <graphics/gl.h>
 #include <kernel/string.h>
@@ -123,59 +120,6 @@ void gl_draw_pixel(struct gl_surface *surf, int x, int y, uint32_t color) {
   if (x < 0 || x >= surf->width || y < 0 || y >= surf->height)
     return;
   surf->buffer[y * surf->stride + x] = color;
-}
-
-/*
- * gl_draw_line - draw an antialiasing-free line using Bresenham's algorithm.
- *
- * Params: surf — target surface; (x0, y0) start, (x1, y1) end; color ARGB8888.
- * Uses integer error accumulation (classic Bresenham): dx, dy are absolute
- * deltas; sx, sy are the step signs; err drives the major-axis advance.
- * Each pixel is written via gl_draw_pixel which bounds-checks individually,
- * so clipping to surface bounds is handled pixel-by-pixel.
- *
- * Side effects: writes pixels to surf->buffer via gl_draw_pixel.
- * Locking: none.
- */
-void gl_draw_line(struct gl_surface *surf, int x0, int y0, int x1, int y1,
-                  uint32_t color) {
-  if (!surf)
-    return;
-  int dx = (x1 > x0) ? (x1 - x0) : (x0 - x1);
-  int dy = (y1 > y0) ? (y1 - y0) : (y0 - y1);
-  int sx = (x0 < x1) ? 1 : -1;
-  int sy = (y0 < y1) ? 1 : -1;
-  int err = (dx > dy ? dx : -dy) / 2;
-  int e2;
-
-  for (;;) {
-    gl_draw_pixel(surf, x0, y0, color);
-    if (x0 == x1 && y0 == y1)
-      break;
-    e2 = err;
-    if (e2 > -dx) {
-      err -= dy;
-      x0 += sx;
-    }
-    if (e2 < dy) {
-      err += dx;
-      y0 += sy;
-    }
-  }
-}
-
-/* Outline rectangle with the same exclusive width/height convention as fill. */
-void gl_draw_rect(struct gl_surface *surf, int x, int y, int w, int h,
-                  uint32_t color) {
-  if (!surf || w <= 0 || h <= 0)
-    return;
-  gl_draw_line(surf, x, y, x + w - 1, y, color);
-  if (h > 1)
-    gl_draw_line(surf, x, y + h - 1, x + w - 1, y + h - 1, color);
-  if (w > 1) {
-    gl_draw_line(surf, x, y + 1, x, y + h - 2, color);
-    gl_draw_line(surf, x + w - 1, y + 1, x + w - 1, y + h - 2, color);
-  }
 }
 
 /*

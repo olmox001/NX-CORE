@@ -1,134 +1,21 @@
 /*
  * kernel/graphics/compositor.c
- * Window Compositor
  *
- * Manages windows and composites them to the screen.
+ * Transitional legacy window compatibility state.
  *
- * =========================================================================
- * NASA/JPL "Power of 10" compliance — status, rule by rule
- * =========================================================================
- * This file targets the Power of 10 rules already invoked by name in
- * several of the FIX() comments below (GFX-COMP-RESERVE-02's static_assert,
- * GFX-COMP-BOUND-01's loop clamps). This block is the single place that
- * states, per rule, where the file stands — honestly, including where full
- * literal compliance is not realistic for a resizable multi-window
- * compositor and what mitigates the gap instead.
+ * Ordinary frame composition, desktop rendering, pointer policy and chrome
+ * belong to supervised userland. This file still contains compatibility
+ * window storage and legacy syscall/object adapters that have not yet been
+ * cut over to the resource/object plane. It must not regain a desktop
+ * renderer or duplicate userland policy.
  *
- *  1. Simple control flow (no goto/setjmp/recursion): MET. No goto,
- *     setjmp/longjmp, or recursive call exists anywhere in this file —
- *     every traversal (window table, region rect lists, sorted[]) is an
- *     explicit iterative loop.
- *
- *  2. Every loop has a statically provable fixed upper bound: MET. Every
- *     loop in this file is bounded by a compile-time constant (MAX_WINDOWS,
- *     REGION_POOL_SIZE, REGION_POOL_RECT_CAP, a fixed 63-char title, the
- *     16x12 cursor bitmap) or by a value clamped to a compile-time constant
- *     before the loop starts (draw_rect_internal/compositor_blit clip w/h to
- *     <=4096 before iterating — see FIX(GFX-COMP-BOUND-01) — and the pixel
- *     loops in compositor_render_internal only ever walk a region's rect
- *     list, itself capped at REGION_POOL_RECT_CAP). No loop here is bounded
- *     only by a runtime value with no static ceiling.
- *
- *  3. No dynamic memory allocation after initialization: MOSTLY MET, one
- *     documented exception. compositor_render_internal()'s occlusion-
- *     culling pass — historically the file's biggest offender, up to ~42
- *     kmalloc/kfree pairs per composited frame via region_create()/
- *     region_destroy() — now draws exclusively from the static
- *     REGION_POOL_SIZE arena (region_pool_acquire()/region_pool_retire(),
- *     see that block comment). The one place this file still calls kmalloc/
- *     kfree after compositor_init() is a window's own pixel buffer
- *     (compositor_create_window/compositor_resize_window/
- *     compositor_destroy_window) and the compositor backbuffer
- *     (compositor_resize, via pmm_alloc_pages_dma). A true rule-3 system
- *     would pre-allocate every window's buffer at its maximum size up
- *     front; for THIS subsystem that means reserving up to MAX_WINDOWS *
- *     4096 * 4096 * 4 bytes (~2.7 GiB) whether or not any window is ever
- *     that large, which trades a real, bounded, well-understood allocator
- *     call for an unrealistic static reservation. The mitigation actually
- *     in place: every one of these calls is documented (see each function's
- *     header comment) to run ONLY from process context — never from
- *     compositor_tick()'s IRQ path — with its return value checked and a
- *     clean failure path (old surface kept, or the call fails outright) on
- *     allocation failure. This is a knowingly-scoped deviation, not an
- *     oversight.
- *
- *  4. Functions fit on one printed page (~60 lines): MOSTLY MET, three
- *     documented exceptions. Every function in this file is at or under
- *     that bound except compositor_render_internal() (the two-pass
- *     occlusion-culling/painter's-algorithm core — see the split rationale
- *     above its forward declaration for exactly which three phases were
- *     already extracted and why the remaining core was not), and
- *     compositor_handle_click()/compositor_update_mouse() (the mouse-IRQ
- *     handlers, which interleave lock-held geometry work with the capture-
- *     locals-then-unlock-then-IPC pattern FIX(GFX-COMP-03) depends on —
- *     splitting them needs the same parameter-object care, not a mechanical
- *     cut). All three are flagged as follow-up work with their natural
- *     seams already named in comments, rather than force-split without a
- *     matching test harness.
- *
- *  5. Adequate runtime assertion density: PARTIALLY MET via a different,
- *     established idiom. This codebase does not use a blanket assert()
- *     macro; instead nearly every function here validates its inputs with
- *     an explicit early-return + pr_err/pr_warn (invalid window dimensions,
- *     unknown window_id, NULL buffers, invalid font metrics, and so on —
- *     see e.g. compositor_create_window's dimension check or
- *     draw_rect_internal's ownership check). Two compile-time invariants
- *     are also enforced via _Static_assert: RESERVED_SYSTEM_SLOTS leaving a
- *     non-empty user pool, and REGION_POOL_SIZE outsizing the per-window vis
- *     demand. The gap: several internal helpers (e.g.
- *     compositor_paint_background/compositor_paint_cursor/
- *     compositor_present_frame) validate their pointer parameters but do
- *     not carry a second, independent runtime check of an invariant beyond
- *     "not NULL" — a genuine opportunity for a follow-up pass, called out
- *     here rather than papered over with decorative asserts that don't
- *     check anything real.
- *
- *  6. Smallest possible scope for data objects: MET, deliberately. Every
- *     per-frame working set that would otherwise be a large stack array
- *     (sorted_windows, visible_regions_store, the region-pool arena, the
- *     compositor backbuffer surface descriptor) is intentionally file-
- *     static instead — the comments at each declaration explain this is to
- *     avoid stack pressure and, for the region pool, kmalloc, from IRQ
- *     context (S-STAB). Everything else is declared at the innermost scope
- *     that uses it.
- *
- *  7. Check the return value of every non-void function; validate every
- *     parameter: MOSTLY MET. kmalloc/pmm_alloc_pages_dma/kernel_ipc_send/
- *     vmm_copy_to_user/vmm_copy_from_user return values are all checked at
- *     every call site in this file. window_id/pid/pointer parameters are
- *     validated at every public entry point before use. The one class of
- *     call whose return value this file does NOT check is
- *     spin_lock_irqsave/spin_unlock_irqrestore/__sync_lock_test_and_set —
- *     these are primitives with no failure mode to check (a spinlock
- *     acquire either blocks until it succeeds or, for the trylock variant
- *     compositor_tick() already handles, returns a boolean that IS checked).
- *
- *  8. Limited preprocessor use: MET. Only object-like macros (color
- *     constants, size/geometry constants, REGION_POOL_*) and simple
- *     function-like macros with no token-pasting, no conditional
- *     compilation beyond header guards, and no macro that hides control
- *     flow.
- *
- *  9. Restrict pointer use (no more than one level of dereferencing,
- *     function pointers used sparingly): MOSTLY MET, one structural
- *     exception. windows[i].buffer / windows[i].term.* / win->term.caret_
- *     shown are one or two levels deep by necessity (a window's own pixel
- *     buffer, and its embedded terminal state) — not pointer-chasing
- *     through unrelated objects. The one real function-pointer dispatch is
- *     dev->ops->present / dev->ops->flush / dev->ops->get_framebuffer,
- *     which is the driver vtable boundary (kernel/graphics.h's gpu_device
- *     abstraction) — a legitimate, narrow, single-purpose use, not
- *     unrestricted pointer-to-pointer chasing.
- *
- * 10. Compile with all warnings enabled and address them: MET for this
- *     file's own code. Compiling this file with -Wall -Wextra against the
- *     project's real headers produces zero warnings originating in this
- *     file (verified during this pass); the only warnings that survive
- *     -Wall -Wextra come from architecture-specific inline primitives this
- *     file merely calls through kernel/arch.h (arch_impl_*), which are out
- *     of this file's scope.
- * =========================================================================
+ * Active code in this file follows the kernel hardening rules: bounded loops,
+ * explicit input validation, checked allocation/copy results, no recursion or
+ * goto, and short lock-held critical sections. Historical renderer-specific
+ * compliance claims are intentionally not retained here after their code was
+ * removed.
  */
+
 #include <kernel/resource.h>
 #include <drivers/gpu/gpu.h>
 #include <drivers/timer.h> /* mono_ns: motion-event rate limiting */
@@ -137,22 +24,10 @@
 #include <kernel/arch.h>
 #include <kernel/compositor_style.h>
 #include <kernel/cpu.h>
-#include <kernel/gfx_chrome.h>
 #include <kernel/graphics.h>
 #include <kernel/kmalloc.h>
 #include <kernel/pmm.h>
 #include <kernel/printk.h>
-#include <kernel/region.h> /* struct region/struct rect — FIX(GFX-COMP-STRUCT-01):
-                              hoisted from a mid-file #include right before
-                              compositor_render_internal (its only previous
-                              user) to the top block. compositor.c now
-                              declares its own region-pool arena (struct
-                              region/struct rect arrays) much earlier in the
-                              file than that render function, so the type
-                              has to be complete before that point too — a
-                              mid-file include only region_create()/
-                              region_destroy() call sites could get away
-                              with. */
 #include <kernel/sched.h>
 #include <kernel/spinlock.h>
 #include <kernel/string.h>
@@ -471,10 +346,8 @@ static int window_region_has_alpha(struct window *win, int x, int y, int w,
   return 0;
 }
 
-/* Title-bar height now comes from the active style (compositor_titlebar_height,
- * Phase 5): 20 by default, 0 for the chrome-less Minimal style.  Button
- * size/gap and their geometry live in gfx_chrome (gfx_chrome_button_geometry),
- * the single source shared by the render pass and the click hit-test. */
+/* Title-bar height still comes from the legacy active style. The remaining
+ * kernel compositor compatibility path no longer owns any chrome renderer. */
 
 /* Display bounds support kernel window placement policy. Framebuffer pixels
  * and render surfaces belong to the ring-3 compositor. Geometry must come from

@@ -1,25 +1,15 @@
 /*
  * kernel/graphics/graphics.c
- * Graphics Subsystem (Bridging HAL and GL)
  *
- * Role:
- *   Thin HAL bridge between the GPU device driver and the GL rasteriser.
- *   graphics_screen_surface() is THE single accessor to the scanout buffer
- *   (S-ALIGN F7): it goes through the gpu_ops.get_framebuffer contract — the
- *   same method the compositor flush path consumes — so no caller knows which
- *   provider implementation sits underneath (ASTRA §1 rule 1/2).  The old
- *   graphics_get_screen_surface() read dev->framebuffer_virt directly (a
- *   second, field-level path to the same memory) and returned a function-
- *   static struct (GFX-GFX-01, SMP-unsafe) — both retired.
+ * GPU presentation and emergency framebuffer graphics.
  *
- * Invariants:
- *   - All draw wrappers silently no-op if no GPU/framebuffer is present.
- *   - graphics_swap_buffers() is a memory-barrier-only stub; the subsystem
- *     operates in single-buffered mode (backbuffer lives in compositor.c).
+ * Normal desktop composition belongs to userland. This file keeps the bounded
+ * full-frame presentation bridge plus the direct framebuffer path required by
+ * panic/fault reporting. Legacy generic screen-drawing wrappers that had no
+ * production consumers are intentionally not part of this interface.
  */
 #include <drivers/gpu/gpu.h>
 #include <graphics/gl.h>
-#include <kernel/arch.h>
 #include <kernel/fault.h>
 #include <kernel/gfx_surface.h>
 #include <kernel/graphics.h>
@@ -100,22 +90,6 @@ int graphics_present_argb8888(const uint32_t *pixels, int width, int height,
 }
 
 /*
- * graphics_draw_pixel - write a single pixel to the screen framebuffer.
- *
- * Params: x, y — screen coordinates (clamped/rejected by gl_draw_pixel if
- *         out of surface bounds).  color — ARGB8888.
- * Side effects: writes one pixel to the HAL framebuffer via gl_draw_pixel.
- * Locking: none; wraps gl_draw_pixel which is not IRQ-safe.
- */
-void graphics_draw_pixel(uint32_t x, uint32_t y, uint32_t color) {
-  struct gl_surface screen;
-  if (graphics_screen_surface(&screen) == 0) {
-    struct gl_surface *surf = &screen;
-    gl_draw_pixel(surf, (int)x, (int)y, color);
-  }
-}
-
-/*
  * graphics_draw_rect - fill an axis-aligned rectangle on the screen.
  *
  * Params: x, y — top-left corner; w, h — dimensions; color — ARGB8888.
@@ -130,36 +104,6 @@ void graphics_draw_rect(uint32_t x, uint32_t y, uint32_t w, uint32_t h,
     gfx_rect_t rect = {(int)x, (int)y, (int)w, (int)h};
     gfx_surface_fill(&screen, &rect, color);
   }
-}
-
-/*
- * graphics_clear - fill the entire screen with a solid colour.
- *
- * Param: color — ARGB8888 fill value.
- * Side effects: overwrites every pixel in the HAL framebuffer (stride*height
- *               words) via gl_clear.
- * Locking: none.
- */
-void graphics_clear(uint32_t color) {
-  struct gl_surface screen;
-  if (graphics_screen_surface(&screen) == 0)
-    gfx_surface_clear(&screen, color);
-}
-
-/*
- * graphics_swap_buffers - issue a full memory barrier to commit pending writes.
- *
- * The system runs in single-buffered mode: there is no second framebuffer to
- * swap.  This function exists as an API hook for future double-buffered
- * support. Currently it only issues hal_mb() to ensure all preceding pixel
- * writes are visible to the GPU DMA engine before any following flush.
- *
- * Side effects: hal_mb() — a full store/load barrier on the current arch.
- * Locking: none required; barrier is inherently CPU-local.
- */
-void graphics_swap_buffers(void) {
-  /* In single-buffered modes, this is a flush/barrier */
-  hal_mb();
 }
 
 /*
@@ -208,40 +152,4 @@ void panic_screen(const char *text) {
   struct gpu_device *dev = gpu_get_primary();
   if (dev && dev->ops && dev->ops->flush)
     dev->ops->flush(dev, 0, 0, dev->width, dev->height);
-}
-
-/*
- * graphics_draw_char - render one Unicode codepoint to the screen framebuffer.
- *
- * Params: x, y — baseline-relative top-left; codepoint — Unicode scalar value;
- *         color — ARGB8888 foreground.
- * Delegates to gl_draw_char (font.c) which performs per-glyph alpha blending.
- * Side effects: writes pixels to the HAL framebuffer.
- * Locking: none; must not be called from IRQ without holding compositor_lock.
- */
-void graphics_draw_char(uint32_t x, uint32_t y, uint32_t codepoint,
-                        uint32_t color) {
-  struct gl_surface screen;
-  if (graphics_screen_surface(&screen) == 0) {
-    struct gl_surface *surf = &screen;
-    gl_draw_char(surf, (int)x, (int)y, codepoint, color);
-  }
-}
-
-/*
- * graphics_draw_string - render a UTF-8 string to the screen framebuffer.
- *
- * Params: x, y — origin; str — null-terminated UTF-8 string; color — ARGB8888.
- * Delegates to gl_draw_string (font.c) which advances the cursor by each
- * glyph's advance width after calling gl_draw_char.
- * Side effects: writes pixels to the HAL framebuffer.
- * Locking: none; must not be called from IRQ without holding compositor_lock.
- */
-void graphics_draw_string(uint32_t x, uint32_t y, const char *str,
-                          uint32_t color) {
-  struct gl_surface screen;
-  if (graphics_screen_surface(&screen) == 0) {
-    struct gl_surface *surf = &screen;
-    gl_draw_string(surf, (int)x, (int)y, str, color);
-  }
 }
