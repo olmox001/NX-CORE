@@ -37,19 +37,13 @@ int sys_set_font(void *data, size_t size) NX_MUST_USE;
 
 /* Compositor API */
 void compositor_init(void);
-/* compositor_resize: retarget the desktop/backbuffer to w x h (GFX-DYN-01).
- * Allocation-free (capacity pre-allocated at init) so it is safe from any
- * context.  The caller must have already set the GPU scanout to the same size
- * (gpu_set_mode) so the next flush strides match. */
+/* Physical output changes update the scanout reference and recompute the
+ * logical desktop at the existing UI scale. Rendering remains in userland. */
 void compositor_resize(int w, int h);
-/* compositor_get_size: current desktop (backbuffer) size. Backs SYS_DISPLAY_INFO. */
+/* Current logical desktop geometry used by windows and pointer routing. */
 void compositor_get_size(int *w, int *h);
-/* compositor_set_zoom: desktop zoom percent (HiDPI, F2). Resizes the GPU scanout
- * to native*100/percent; QEMU stretches it to the host window. 0/-1. */
+/* Change logical UI scale only; the physical GPU mode is unchanged. */
 int compositor_set_zoom(int percent) NX_MUST_USE;
-/* compositor_set_native_mode: record a real resolution change as the zoom-100
- * reference (resets zoom). Call alongside gpu_set_mode + compositor_resize. */
-void compositor_set_native_mode(int w, int h);
 int compositor_create_window(int x, int y, int w, int h, const char *title,
                              struct process *owner) NX_MUST_USE;
 void compositor_destroy_window(int window_id);

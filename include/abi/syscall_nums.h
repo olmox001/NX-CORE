@@ -56,7 +56,7 @@
 #define SYS_SET_DISPLAY_MODE   271  /* set resolution (w,h); desktop adapts; CAP_WINDOW */
 #define SYS_DISPLAY_POLL       273  /* apply a pending host display-change; returns 1 if resized */
 #define SYS_SET_STYLE          274  /* compositor look: arg0=style, arg1=theme, arg2=bg (-1 = keep) */
-#define SYS_SET_ZOOM           275  /* desktop zoom percent (HiDPI/zoom); arg0=percent [25..400] */
+#define SYS_SET_ZOOM           275  /* desktop zoom percent; OS1_DISPLAY_ZOOM_* contract */
 #define SYS_WINDOW_SNAPSHOT    276  /* versioned window metadata + pixels for compositord */
 #define SYS_DISPLAY_PRESENT    277  /* versioned full-frame hand-off from compositord */
 #define SYS_INPUT_RAW_READ     278  /* bounded raw input read: event, role, OS1_INPUT_READ_* */

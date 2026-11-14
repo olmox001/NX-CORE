@@ -477,20 +477,18 @@ static int window_region_has_alpha(struct window *win, int x, int y, int w,
  * the single source shared by the render pass and the click hit-test. */
 
 /* Display bounds support kernel window placement policy. Framebuffer pixels
- * and render surfaces belong to the ring-3 compositor. */
-#define COMPOSITOR_FALLBACK_W 1024
-#define COMPOSITOR_FALLBACK_H 768
+ * and render surfaces belong to the ring-3 compositor. Geometry must come from
+ * the registered display provider; the kernel never invents a desktop mode. */
 
 static int bb_width = 0;
 static int bb_height = 0;
 
-/* Desktop zoom / HiDPI (F2, reworked).  We do NOT scale in software: the GPU
- * scanout RESOURCE is resized to native*100/zoom and QEMU stretches that to the
- * host window (which is exactly what the manual set-mode path does).  The
- * backbuffer == the scanout size; native_w/h is the zoom-100 reference (the
- * host display size).  zoom>100 ⇒ smaller scanout, QEMU upscales ⇒ HiDPI. */
+/* Physical output geometry and logical desktop scale are independent.
+ * native_w/native_h track the active or prepared scanout mode. bb_width/
+ * bb_height remain the logical desktop used by window placement and input.
+ * Ring-3 nxcompositor performs the final logical->physical scale. */
 static int native_w = 0, native_h = 0;
-static int desktop_zoom = 100;
+static int desktop_zoom = OS1_DISPLAY_ZOOM_DEFAULT_PERCENT;
 
 /*
  * Initialize Compositor
@@ -523,12 +521,10 @@ static int desktop_zoom = 100;
  * COMPOSITOR-INIT-01 needed atomic, and never overlaps with pmm's own
  * lock or with I/O. */
 void compositor_init(void) {
-  struct gpu_device *dev = gpu_get_primary();
-  int w = dev ? dev->width : COMPOSITOR_FALLBACK_W;
-  int h = dev ? dev->height : COMPOSITOR_FALLBACK_H;
-  if (w <= 0 || h <= 0) {
-    w = COMPOSITOR_FALLBACK_W;
-    h = COMPOSITOR_FALLBACK_H;
+  int w = 0, h = 0;
+  if (gpu_get_display_info(&w, &h) != 0 || w <= 0 || h <= 0) {
+    pr_err("%s", "Compositor: no valid display geometry; window manager unavailable\n");
+    return;
   }
 
   uint64_t flags;
@@ -538,7 +534,7 @@ void compositor_init(void) {
   next_window_id = 100;
   native_w = w;
   native_h = h;
-  desktop_zoom = 100;
+  desktop_zoom = OS1_DISPLAY_ZOOM_DEFAULT_PERCENT;
   bb_width = w;
   bb_height = h;
   spin_unlock_irqrestore(&compositor_lock, flags);
@@ -606,13 +602,10 @@ void compositor_get_size(int *w, int *h) {
      * top inset both fall well inside this */
 
 static int compositor_reserved_top_locked(int exclude_id) {
-  /* VECCHIO: partiva da compositor_titlebar_height() → forzava
-   * anche le finestre senza barra (top_most) a stare sotto un
-   * margine inesistente.
-   */
-  /* NUOVO: la riserva è determinata SOLO dalle finestre top_most
-   * ancorate al bordo superiore, non dalla decorazione.
-   */
+  /* The old path started from compositor_titlebar_height(), forcing
+   * titlebar-less top-most windows below a margin that did not exist.
+   * Reserve only top-most windows anchored to the upper edge; window
+   * decoration does not define desktop reservation policy. */
   int top = 0;
   for (int i = 0; i < MAX_WINDOWS; i++) {
     if (windows[i].id == 0 || windows[i].id == exclude_id)
@@ -630,7 +623,9 @@ static int compositor_reserved_top_locked(int exclude_id) {
 
 static int compositor_reserved_bottom_locked(int exclude_id) {
   int bottom = 0;
-  int screen_h = bb_height > 0 ? bb_height : 600;
+  if (bb_height <= 0)
+    return 0;
+  int screen_h = bb_height;
   for (int i = 0; i < MAX_WINDOWS; i++) {
     if (windows[i].id == 0 || windows[i].id == exclude_id)
       continue;
@@ -646,29 +641,27 @@ static int compositor_reserved_bottom_locked(int exclude_id) {
   return bottom;
 }
 
-/*
- * compositor_resize - retarget the backbuffer to the scanout's new w x h.
- *
- * The caller must have already resized the GPU scanout (gpu_set_mode) to the
- * SAME size; the backbuffer always matches the scanout, and QEMU stretches the
- * scanout to the host window (no software scaling here).  Reallocates the
- * backbuffer to exactly w*h — so it must run in process context (it does:
- * SYS_SET_DISPLAY_MODE / SYS_SET_ZOOM / SYS_DISPLAY_POLL), never the IRQ tick.
- * The new buffer is allocated before the lock and the old one freed after, to
- * keep the compositor_lock hold (shared with the render tick) short.
- */
-void compositor_resize(int w, int h) {
-  if (w <= 0 || h <= 0 || w > 8192 || h > 8192)
-    return;
-  if (w == bb_width && h == bb_height)
-    return;
+static int compositor_virtual_size(int physical_w, int physical_h,
+                                   int percent, int *virtual_w,
+                                   int *virtual_h) {
+  if (virtual_w == NULL || virtual_h == NULL || physical_w <= 0 ||
+      physical_h <= 0 || percent < OS1_DISPLAY_ZOOM_MIN_PERCENT ||
+      percent > OS1_DISPLAY_ZOOM_MAX_PERCENT)
+    return -EINVAL;
+  int64_t width =
+      (int64_t)physical_w * OS1_DISPLAY_ZOOM_DEFAULT_PERCENT / percent;
+  int64_t height =
+      (int64_t)physical_h * OS1_DISPLAY_ZOOM_DEFAULT_PERCENT / percent;
+  if (width < 1 || height < 1 || width > 8192 || height > 8192)
+    return -ERANGE;
+  *virtual_w = (int)width;
+  *virtual_h = (int)height;
+  return 0;
+}
 
-  uint64_t flags;
-  spin_lock_irqsave(&compositor_lock, &flags);
+static void compositor_apply_bounds_locked(int w, int h) {
   bb_width = w;
   bb_height = h;
-
-  /* Keep window policy clamping in kernel; no render buffer is allocated. */
   for (int i = 0; i < MAX_WINDOWS; i++) {
     if (windows[i].id == 0)
       continue;
@@ -680,50 +673,64 @@ void compositor_resize(int w, int h) {
       windows[i].x = bb_width - margin_w;
     if (windows[i].x < 0)
       windows[i].x = 0;
-    int reserved_top = compositor_reserved_top_locked(windows[i].id);
-    int reserved_bottom = compositor_reserved_bottom_locked(windows[i].id);
-    if (windows[i].y > bb_height - reserved_bottom - margin_h)
-      windows[i].y = bb_height - reserved_bottom - margin_h;
-    if (windows[i].y < reserved_top)
-      windows[i].y = reserved_top;
+    int top = compositor_reserved_top_locked(windows[i].id);
+    int bottom = compositor_reserved_bottom_locked(windows[i].id);
+    if (windows[i].y > bb_height - bottom - margin_h)
+      windows[i].y = bb_height - bottom - margin_h;
+    if (windows[i].y < top)
+      windows[i].y = top;
+  }
+}
+
+/* A physical mode change updates only the output reference. The logical
+ * desktop keeps the selected UI scale and remains independent of scanout. */
+void compositor_resize(int w, int h) {
+  if (w <= 0 || h <= 0 || w > 8192 || h > 8192)
+    return;
+  int logical_w = 0, logical_h = 0, changed = 0, zoom = 0;
+  uint64_t flags;
+  spin_lock_irqsave(&compositor_lock, &flags);
+  native_w = w;
+  native_h = h;
+  zoom = desktop_zoom;
+  if (compositor_virtual_size(w, h, zoom, &logical_w, &logical_h) == 0) {
+    changed = logical_w != bb_width || logical_h != bb_height;
+    if (changed)
+      compositor_apply_bounds_locked(logical_w, logical_h);
   }
   spin_unlock_irqrestore(&compositor_lock, flags);
-  pr_info("Compositor: Window bounds updated to %dx%d\n", w, h);
+  if (changed)
+    nx_surface_changed();
+  pr_info("Compositor: scanout %dx%d, logical %dx%d, scale %d%%\n", w, h,
+          logical_w, logical_h, zoom);
 }
 
-/* compositor_set_native_mode - record a real mode change (the user/host set a
- * concrete resolution): this becomes the zoom-100 reference and resets zoom. */
-void compositor_set_native_mode(int w, int h) {
-  if (w > 0 && h > 0) {
-    native_w = w;
-    native_h = h;
-    desktop_zoom = 100;
-  }
-}
-
-/* compositor_set_zoom - desktop HiDPI/zoom (F2).  Resizes the actual GPU
- * scanout resource to native*100/zoom and lets QEMU stretch it to the host
- * window; the backbuffer follows.  Clamped to [100,400] (zoom-in only —
- * zoom-out would need a scanout larger than the panel).  Backs SYS_SET_ZOOM. */
+/* UI scale changes the logical desktop only. Ring-3 nxcompositor performs the
+ * final logical-to-physical scale; the GPU scanout mode is never changed. */
 int compositor_set_zoom(int percent) {
-  if (percent < 100)
-    percent = 100;
-  if (percent > 400)
-    percent = 400;
-  if (native_w <= 0 || native_h <= 0)
-    return -1;
-
-  int nw = (int)((long)native_w * 100 / percent);
-  int nh = (int)((long)native_h * 100 / percent);
-  if (nw < 1 || nh < 1)
-    return -1;
-
+  if (percent < OS1_DISPLAY_ZOOM_MIN_PERCENT ||
+      percent > OS1_DISPLAY_ZOOM_MAX_PERCENT)
+    return -EINVAL;
+  int logical_w = 0, logical_h = 0, changed = 0;
+  int physical_w = 0, physical_h = 0;
+  uint64_t flags;
+  spin_lock_irqsave(&compositor_lock, &flags);
+  physical_w = native_w;
+  physical_h = native_h;
+  if (compositor_virtual_size(physical_w, physical_h, percent, &logical_w,
+                              &logical_h) != 0) {
+    spin_unlock_irqrestore(&compositor_lock, flags);
+    return -ENODEV;
+  }
   desktop_zoom = percent;
-  if (gpu_set_mode(nw, nh) != 0)
-    return -1;
-  compositor_resize(nw, nh);
-  pr_info("Compositor: zoom %d%% -> scanout %dx%d (native %dx%d)\n", percent,
-          nw, nh, native_w, native_h);
+  changed = logical_w != bb_width || logical_h != bb_height;
+  if (changed)
+    compositor_apply_bounds_locked(logical_w, logical_h);
+  spin_unlock_irqrestore(&compositor_lock, flags);
+  if (changed)
+    nx_surface_changed();
+  pr_info("Compositor: UI scale %d%% -> logical %dx%d (scanout %dx%d)\n",
+          percent, logical_w, logical_h, physical_w, physical_h);
   return 0;
 }
 
@@ -813,8 +820,14 @@ int compositor_create_window(int x, int y, int w, int h, const char *title,
     return -ENOSPC;
   }
 
-  int screen_w = bb_width > 0 ? bb_width : 800;
-  int screen_h = bb_height > 0 ? bb_height : 600;
+  if (bb_width <= 0 || bb_height <= 0) {
+    spin_unlock_irqrestore(&compositor_lock, flags);
+    term_free(&fresh.term);
+    kfree(fresh.buffer);
+    return -ENODEV;
+  }
+  int screen_w = bb_width;
+  int screen_h = bb_height;
   if (x + w > screen_w)
     x = screen_w - w;
   if (x < 0)

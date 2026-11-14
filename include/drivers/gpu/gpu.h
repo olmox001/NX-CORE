@@ -6,11 +6,24 @@
 
 struct gpu_device;
 
+#define GPU_DISPLAY_MODE_MAX 32U
+#define GPU_DISPLAY_MODE_CURRENT (1U << 0)
+#define GPU_DISPLAY_MODE_PREFERRED (1U << 1)
+#define GPU_DISPLAY_MODE_INTERLACED (1U << 2)
+
+struct gpu_display_mode {
+  uint32_t width;
+  uint32_t height;
+  uint32_t refresh_millihz;
+  uint32_t flags;
+};
+
 struct gpu_ops {
   int (*init)(struct gpu_device *dev);
-  /* Reconfigure the scanout to width x height at runtime.  Recreates the host
-   * resource + backing and re-points the scanout; updates dev->width/height
-   * and the framebuffer pointer.  0 on success.  (GFX-DYN-01 #49) */
+  /* Prepare width x height as the next presentation target. Providers may
+   * keep the current scanout visible until a frame for the prepared geometry
+   * is ready; present() then commits the replacement atomically. 0 means the
+   * target is active or prepared. (GFX-DYN-01 #49) */
   int (*set_mode)(struct gpu_device *dev, int width, int height);
   void *(*get_framebuffer)(struct gpu_device *dev, size_t *size);
   int (*flush)(struct gpu_device *dev, int x, int y, int w, int h);
@@ -20,9 +33,10 @@ struct gpu_ops {
    * this instead of get_framebuffer()+memcpy()+flush(): doing the copy under
    * the same lock that set_mode() takes to swap+free the backing closes the
    * use-after-free where a concurrent resolution/zoom change frees the scanout
-   * mid-copy.  The driver copies only the intersection with its CURRENT scanout
-   * and returns <0 (skip this frame) if src geometry no longer matches — never
-   * an OOB.  0 on success (region presented). */
+   * mid-copy. A frame matching a prepared target may atomically commit that
+   * target after upload. A stale frame returns -EAGAIN so the caller refreshes
+   * display state and retries; other negative returns are provider failures.
+   * 0 means the frame was presented and any pending commit completed. */
   int (*present)(struct gpu_device *dev, const uint32_t *src, int src_w,
                  int src_h, int x, int y, int w, int h);
   void (*destroy)(struct gpu_device *dev);
@@ -34,6 +48,13 @@ struct gpu_ops {
    * new_w/new_h when the host resized the output, 0 if nothing changed,
    * <0 on error/unsupported transport. */
   int (*poll_events)(struct gpu_device *dev, int *new_w, int *new_h);
+  /* Provider-attested hardware mode catalog. The generation changes when the
+   * connector catalog changes so userland cannot apply a stale index. */
+  int (*get_mode)(struct gpu_device *dev, uint32_t index,
+                  struct gpu_display_mode *mode, uint32_t *count,
+                  uint64_t *generation);
+  int (*set_mode_index)(struct gpu_device *dev, uint32_t index,
+                        uint64_t generation);
 };
 
 struct gpu_device {
@@ -61,6 +82,9 @@ struct gpu_device *gpu_get_primary(void);
 int gpu_set_mode(int width, int height);
 int gpu_get_display_info(int *width, int *height);
 int gpu_poll_events(int *new_w, int *new_h);
+int gpu_get_mode(uint32_t index, struct gpu_display_mode *mode,
+                 uint32_t *count, uint64_t *generation);
+int gpu_set_mode_index(uint32_t index, uint64_t generation);
 
 /* Surface-speaking present (graphics-port): the provider contract talks the
  * same semantic unit the whole stack does — a validated gfx_surface plus a

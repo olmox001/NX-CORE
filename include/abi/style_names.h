@@ -19,6 +19,10 @@
 #ifndef _API_STYLE_NAMES_H
 #define _API_STYLE_NAMES_H
 
+#define OS1_STYLE_REGISTRY_KEY "style.name"
+#define OS1_THEME_REGISTRY_KEY "theme.color"
+#define OS1_BACKGROUND_REGISTRY_KEY "background.name"
+
 static const char *const os1_style_names[] = {
     "nexs", "classic", "material", "glass", "minimal", "retro",
 };

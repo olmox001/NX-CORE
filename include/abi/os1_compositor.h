@@ -9,6 +9,9 @@
 
 #define OS1_COMPOSITOR_ABI_V1 1u
 #define OS1_COMPOSITOR_TITLE_MAX 64u
+#define OS1_DISPLAY_ZOOM_DEFAULT_PERCENT 100
+#define OS1_DISPLAY_ZOOM_MIN_PERCENT 100
+#define OS1_DISPLAY_ZOOM_MAX_PERCENT 400
 
 struct os1_window_snapshot_v1 {
   uint32_t abi_version;

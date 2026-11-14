@@ -69,6 +69,62 @@ static long surface_signal(void *state, const void *user, size_t size) {
   return 0;
 }
 
+static uint32_t display_mode_flags(uint32_t flags) {
+  uint32_t result = 0U;
+  if (flags & GPU_DISPLAY_MODE_CURRENT) result |= OS1_DISPLAY_MODE_CURRENT;
+  if (flags & GPU_DISPLAY_MODE_PREFERRED) result |= OS1_DISPLAY_MODE_PREFERRED;
+  if (flags & GPU_DISPLAY_MODE_INTERLACED) result |= OS1_DISPLAY_MODE_INTERLACED;
+  return result;
+}
+
+static long display_mode_read(void *state, void *user, size_t size) {
+  struct os1_display_mode_v1 request;
+  struct gpu_display_mode mode = {0};
+  uint32_t count = 0U;
+  uint64_t generation = 0U;
+  (void)state;
+  if (size != sizeof(request) ||
+      hal_copy_from_user(&request, user, sizeof(request)))
+    return size == sizeof(request) ? -EFAULT : -EINVAL;
+  if (request.abi_version != OS1_SURFACE_ABI_VERSION ||
+      request.struct_size != sizeof(request) ||
+      request.operation != OS1_DISPLAY_MODE_QUERY || request.reserved != 0U)
+    return -EINVAL;
+  int result = gpu_get_mode(request.index, &mode, &count, &generation);
+  if (result != 0) return result;
+  request.count = count;
+  request.generation = generation;
+  request.width = mode.width;
+  request.height = mode.height;
+  request.refresh_millihz = mode.refresh_millihz;
+  request.flags = display_mode_flags(mode.flags);
+  return hal_copy_to_user(user, &request, sizeof(request)) == 0
+             ? (long)sizeof(request)
+             : -EFAULT;
+}
+
+static long display_mode_write(void *state, const void *user, size_t size) {
+  struct os1_display_mode_v1 request;
+  struct gpu_display_mode mode = {0};
+  uint32_t count = 0U;
+  uint64_t generation = 0U;
+  (void)state;
+  if (size != sizeof(request) ||
+      hal_copy_from_user(&request, user, sizeof(request)))
+    return size == sizeof(request) ? -EFAULT : -EINVAL;
+  if (request.abi_version != OS1_SURFACE_ABI_VERSION ||
+      request.struct_size != sizeof(request) ||
+      request.operation != OS1_DISPLAY_MODE_SET || request.reserved != 0U)
+    return -EINVAL;
+  int queried = gpu_get_mode(request.index, &mode, &count, &generation);
+  if (queried != 0) return queried;
+  if (generation != request.generation) return -EAGAIN;
+  int changed = gpu_set_mode_index(request.index, request.generation);
+  if (changed != 0) return changed;
+  compositor_resize((int)mode.width, (int)mode.height);
+  return 0;
+}
+
 static int present_validate(const struct os1_compositor_present_v1 *p) {
   if (p->abi_version != OS1_COMPOSITOR_ABI_V1 || p->struct_size < sizeof(*p) ||
       p->width <= 0 || p->height <= 0 || p->stride != p->width || !p->pixels)
@@ -119,6 +175,8 @@ static void display_release(void *state) {
 
 static const struct nx_resource_ops surface_ops = {
     .read = surface_read, .write = surface_signal, .wait = surface_wait};
+static const struct nx_resource_ops display_mode_ops = {
+    .read = display_mode_read, .write = display_mode_write};
 static const struct nx_resource_ops display_ops = {
     .read = surface_read, .write = display_write, .release = display_release};
 
@@ -134,6 +192,13 @@ int nx_resource_acquire(struct process *caller, const char *path,
       !proc_has_cap(caller, CAP_WINDOW) || (rights & ~allowed)) return -EPERM;
   if (strcmp(path, OS1_RESOURCE_SURFACE_EVENTS) == 0) {
     object->resource_ops = &surface_ops;
+    return 0;
+  }
+  if (strcmp(path, OS1_RESOURCE_DISPLAY_MODES) == 0) {
+    if ((rights & OS1_RIGHT_WAIT) ||
+        !(rights & (OS1_RIGHT_READ | OS1_RIGHT_WRITE)))
+      return -EINVAL;
+    object->resource_ops = &display_mode_ops;
     return 0;
   }
   if (strcmp(path, OS1_RESOURCE_DISPLAY) != 0) {

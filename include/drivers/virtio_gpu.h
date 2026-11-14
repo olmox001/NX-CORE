@@ -8,6 +8,8 @@
 #include <kernel/types.h>
 
 #define VIRTIO_GPU_EVENT_DISPLAY (1 << 0)
+#define VIRTIO_GPU_F_EDID 1u
+#define VIRTIO_GPU_EDID_MAX_BYTES 1024u
 
 struct virtio_gpu_config {
   uint32_t events_read;
@@ -29,6 +31,9 @@ enum virtio_gpu_ctrl_type {
   VIRTIO_GPU_CMD_TRANSFER_TO_HOST_2D,
   VIRTIO_GPU_CMD_RESOURCE_ATTACH_BACKING,
   VIRTIO_GPU_CMD_RESOURCE_DETACH_BACKING,
+  VIRTIO_GPU_CMD_GET_CAPSET_INFO,
+  VIRTIO_GPU_CMD_GET_CAPSET,
+  VIRTIO_GPU_CMD_GET_EDID,
 
   /* Success Responses */
   VIRTIO_GPU_RESP_OK_NODATA = 0x1100,
@@ -73,6 +78,19 @@ struct virtio_gpu_display_one {
 struct virtio_gpu_resp_display_info {
   struct virtio_gpu_ctrl_hdr hdr;
   struct virtio_gpu_display_one pmodes[VIRTIO_GPU_MAX_SCANOUTS];
+} __attribute__((packed));
+
+struct virtio_gpu_cmd_get_edid {
+  struct virtio_gpu_ctrl_hdr hdr;
+  uint32_t scanout;
+  uint32_t padding;
+} __attribute__((packed));
+
+struct virtio_gpu_resp_edid {
+  struct virtio_gpu_ctrl_hdr hdr;
+  uint32_t size;
+  uint32_t padding;
+  uint8_t edid[VIRTIO_GPU_EDID_MAX_BYTES];
 } __attribute__((packed));
 
 /* Resource Create 2D */
@@ -139,7 +157,13 @@ struct virtio_gpu_resource_unref {
 } __attribute__((packed));
 
 /* Driver API */
+struct gpu_display_mode;
 void virtio_gpu_init(void);
+int virtio_gpu_edid_modes(const uint8_t *edid, size_t size,
+                          struct gpu_display_mode *modes, uint32_t capacity,
+                          uint32_t *count);
+int virtio_gpu_edid_preferred_mode(const uint8_t *edid, size_t size,
+                                   int *width, int *height);
 
 /* Public Framebuffer Info */
 struct gpu_framebuffer {

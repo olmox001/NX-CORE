@@ -14,7 +14,14 @@
     "OS1_BUFFER_MAP": "0x00080003U",
     "OS1_BUFFER_UNMAP": "0x00080004U",
     "OS1_BUFFER_WRITABLE": "1U",
-    "OS1_BUFFER_ACCOUNT_UNKNOWN": "UINT64_MAX"
+    "OS1_BUFFER_ACCOUNT_UNKNOWN": "UINT64_MAX",
+    "OS1_RESOURCE_DISPLAY_MODES": "\"display/0/modes\"",
+    "OS1_DISPLAY_MODE_QUERY": "0U",
+    "OS1_DISPLAY_MODE_SET": "1U",
+    "OS1_DISPLAY_MODE_CURRENT": "1U",
+    "OS1_DISPLAY_MODE_PREFERRED": "2U",
+    "OS1_DISPLAY_MODE_INTERLACED": "4U",
+    "OS1_DISPLAY_MODE_MAX": "32U"
   },
   "structs": [
     {
@@ -183,6 +190,67 @@
           "uint64_t",
           "hardware_cycles",
           64
+        ]
+      ]
+    },
+    {
+      "name": "os1_display_mode_v1",
+      "size": 48,
+      "fields": [
+        [
+          "uint32_t",
+          "abi_version",
+          0
+        ],
+        [
+          "uint32_t",
+          "struct_size",
+          4
+        ],
+        [
+          "uint32_t",
+          "operation",
+          8
+        ],
+        [
+          "uint32_t",
+          "index",
+          12
+        ],
+        [
+          "uint32_t",
+          "count",
+          16
+        ],
+        [
+          "uint32_t",
+          "reserved",
+          20
+        ],
+        [
+          "uint64_t",
+          "generation",
+          24
+        ],
+        [
+          "uint32_t",
+          "width",
+          32
+        ],
+        [
+          "uint32_t",
+          "height",
+          36
+        ],
+        [
+          "uint32_t",
+          "refresh_millihz",
+          40
+        ],
+        [
+          "uint32_t",
+          "flags",
+          44
         ]
       ]
     }

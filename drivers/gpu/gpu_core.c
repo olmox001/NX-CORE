@@ -79,6 +79,21 @@ int gpu_poll_events(int *new_w, int *new_h) {
   return dev->ops->poll_events(dev, new_w, new_h);
 }
 
+int gpu_get_mode(uint32_t index, struct gpu_display_mode *mode,
+                 uint32_t *count, uint64_t *generation) {
+  struct gpu_device *dev = primary_gpu;
+  if (!dev || !dev->ops || !dev->ops->get_mode)
+    return -1;
+  return dev->ops->get_mode(dev, index, mode, count, generation);
+}
+
+int gpu_set_mode_index(uint32_t index, uint64_t generation) {
+  struct gpu_device *dev = primary_gpu;
+  if (!dev || !dev->ops || !dev->ops->set_mode_index)
+    return -1;
+  return dev->ops->set_mode_index(dev, index, generation);
+}
+
 int gpu_present_surface(const struct gl_surface *src,
                         const struct gfx_rect *damage) {
   struct gpu_device *dev = primary_gpu;

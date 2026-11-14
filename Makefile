@@ -111,7 +111,7 @@ LDFLAGS_KERN := -nostdlib -static -z noexecstack $(FATAL_LINK_FLAGS) \
 include build.mk
 -include $(DEPS)
 
-.PHONY: all hal check check-contracts check-sdk-boundary check-object-boot-provider check-virtio-ring-layout check-virtio-dma-lifecycle check-gpu-mode-contract check-driver-dma-claim setup-deps require-sdk print-sdk-root clean run boot debug debug-direct disasm symbols test-debug test-nxpax-core test-nxpax-stress help
+.PHONY: all hal check check-contracts check-sdk-boundary check-object-boot-provider check-virtio-ring-layout check-virtio-dma-lifecycle check-gpu-mode-contract check-virtio-gpu-edid check-driver-dma-claim setup-deps require-sdk print-sdk-root clean run boot debug debug-direct disasm symbols test-debug test-nxpax-core test-nxpax-stress help
 all: kernel bootloader
 hal: $(HAL_LIB)
 
@@ -121,7 +121,7 @@ require-sdk:
 print-sdk-root:
 	@tools/resolve-sdk.sh --print
 
-check: require-sdk check-contracts check-sdk-boundary check-object-boot-provider check-virtio-ring-layout check-virtio-dma-lifecycle check-gpu-mode-contract check-driver-dma-claim
+check: require-sdk check-contracts check-sdk-boundary check-object-boot-provider check-virtio-ring-layout check-virtio-dma-lifecycle check-gpu-mode-contract check-virtio-gpu-edid check-driver-dma-claim
 	@set -eu; for tool in "$(CC)" "$(LD)" "$(OBJCOPY)" "$(CROSS_COMPILE)nm"; do \
 	  command -v "$$tool" >/dev/null || { echo "missing tool: $$tool" >&2; exit 1; }; done
 	@case "$(ARCH):$$($(CC) -dumpmachine)" in \
@@ -177,6 +177,14 @@ check-gpu-mode-contract:
 	  test/gpu_mode_contract_test.c drivers/gpu/gpu_core.c \
 	  -o "$(BUILD_DIR)/host-tests/gpu_mode_contract_test"
 	@"$(BUILD_DIR)/host-tests/gpu_mode_contract_test"
+
+check-virtio-gpu-edid:
+	@mkdir -p "$(BUILD_DIR)/host-tests"
+	@$(HOST_CC) -std=c11 -Wall -Wextra -Werror -include test/host_kernel_compat.h \
+	  -I$(KERNEL_DIR)/include -I$(KERNEL_DIR)/include/abi -I$(KERNEL_DIR)/include/api \
+	  test/virtio_gpu_edid_test.c drivers/gpu/virtio_gpu_edid.c \
+	  -o "$(BUILD_DIR)/host-tests/virtio_gpu_edid_test"
+	@"$(BUILD_DIR)/host-tests/virtio_gpu_edid_test"
 
 check-driver-dma-claim:
 	@mkdir -p "$(BUILD_DIR)/host-tests"

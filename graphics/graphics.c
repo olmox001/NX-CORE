@@ -78,11 +78,12 @@ int graphics_screen_surface(struct gl_surface *out) {
  * the GPU provider; it performs no rasterization or window composition. */
 int graphics_present_argb8888(const uint32_t *pixels, int width, int height,
                               int stride, size_t pixel_capacity) {
-  struct gl_surface screen;
-  if (!pixels || width <= 0 || height <= 0 || stride != width ||
-      graphics_screen_surface(&screen) != 0 || width != screen.width ||
-      height != screen.height)
+  if (!pixels || width <= 0 || height <= 0 || stride != width)
     return -EINVAL;
+  /* Do not compare against the active scanout here. A mode transition may
+   * have a prepared target with different geometry while the old scanout is
+   * intentionally still visible. The GPU provider owns active/pending target
+   * selection under its device lock. */
   size_t required = (size_t)width * (size_t)height;
   if (required / (size_t)width != (size_t)height ||
       pixel_capacity < required)

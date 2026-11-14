@@ -31,6 +31,7 @@ KERN_C_SOURCES = \
     $(KERNEL_DIR)/drivers/virtio/virtio_input.c \
     $(KERNEL_DIR)/drivers/virtio/virtio_dma.c \
     $(KERNEL_DIR)/drivers/gpu/virtio_gpu.c \
+    $(KERNEL_DIR)/drivers/gpu/virtio_gpu_edid.c \
     $(KERNEL_DIR)/drivers/gpu/gpu_core.c \
     $(KERNEL_DIR)/drivers/usb/usb_core.c \
     $(KERNEL_DIR)/drivers/usb/usb_hid.c \
