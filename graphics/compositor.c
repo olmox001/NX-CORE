@@ -35,6 +35,7 @@
 #include <kernel/types.h>
 #include <kernel/vmm.h>
 #include <os1_compositor.h>
+#include <surface.h>
 #include <object.h> /* struct window_info, WININFO_* — windows as objects (§6.7) */
 #include <stdint.h>
 
@@ -223,6 +224,10 @@ struct window {
    * size while it reallocates → fluid resize).  0 means "same as logical". */
   int draw_w, draw_h;
   int presentation_managed; /* Explicit WM extent survives delayed app adoption. */
+  int requested_draw_w, requested_draw_h; /* Restored after workspace expands. */
+  uint32_t layout_anchor, layout_layer, layout_order;
+  uint32_t layout_margin, layout_reserved;
+  int layout_registered; /* Registration is tied to the window/PID lifetime. */
   int z_order;
   int visible;
   int minimized; /* If true, sent to background by the user/WM (dock-
@@ -363,6 +368,21 @@ static int bb_height = 0;
 static int native_w = 0, native_h = 0;
 static int desktop_zoom = OS1_DISPLAY_ZOOM_DEFAULT_PERCENT;
 
+/* Single ownership boundary for the logical base policy. This record is
+ * accessed only in critical sections protected by compositor_lock. It is
+ * not a second compositor or a per-process desktop policy. */
+struct workspace_policy_state {
+  uint32_t mode;
+  int base_w;
+  int base_h;
+};
+
+static struct workspace_policy_state *workspace_policy(void) {
+  static struct workspace_policy_state state = {
+      OS1_DISPLAY_WORKSPACE_AUTO, 0, 0};
+  return &state;
+}
+
 /*
  * Initialize Compositor
  *
@@ -408,6 +428,10 @@ void compositor_init(void) {
   native_w = w;
   native_h = h;
   desktop_zoom = OS1_DISPLAY_ZOOM_DEFAULT_PERCENT;
+  struct workspace_policy_state *policy = workspace_policy();
+  policy->mode = OS1_DISPLAY_WORKSPACE_AUTO;
+  policy->base_w = 0;
+  policy->base_h = 0;
   bb_width = w;
   bb_height = h;
   spin_unlock_irqrestore(&compositor_lock, flags);
@@ -438,80 +462,41 @@ void compositor_get_size(int *w, int *h) {
     *h = bb_height;
 }
 
-/*
- * compositor_reserved_top_locked / compositor_reserved_bottom_locked -
- * FIX(GFX-COMP-RESERVE-01): infer the screen-edge strip currently claimed by
- * permanent top_most chrome (nxbar's top bar, nxui's dock) so that ordinary
- * window placement/resize/drag never slides underneath it.
- *
- * Before this fix, compositor_create_window(), compositor_resize(), and
- * compositor_update_mouse()'s drag clamp only checked compositor_titlebar_
- * height() at the top (a per-window DECORATION metric — the height of a
- * window's OWN titlebar — which has nothing to do with nxbar) and the bare
- * screen edge at the bottom (nothing reserved at all).  Practical effect:
- *   - a window could be created or dragged with y as low as the titlebar
- *     height, sliding it underneath nxbar's strip, which the compositor had
- *     no notion of;
- *   - any window taller than (screen_h - a few px) got its y clamped to
- *     "screen_h - h" — flush against the physical bottom edge — with no
- *     margin for nxui's dock, so it ended up hidden behind the dock instead
- *     of stopping above it.
- *
- * The compositor still does not know "nxbar" or "nxui" by name (kernel/
- * userland separation, ASTRA §1) — it infers the reservation purely from
- * geometry: any VISIBLE, TOP_MOST window whose edge sits within
- * RESERVE_EDGE_SLOP pixels of a screen edge is treated as permanent chrome
- * anchored to that edge, and its footprint is reserved.  exclude_id lets a
- * window being placed/dragged skip counting itself (pass 0 if the window has
- * no id yet, e.g. during creation).  Caller must hold compositor_lock.
- *
- * Defined here (ahead of compositor_resize, the first user) rather than
- * right before compositor_create_window: a static function must be declared
- * before every call site in the same translation unit, and compositor_resize
- * appears earlier in this file than compositor_create_window.
- */
-#define RESERVE_EDGE_SLOP                                                      \
-  8 /* nxui's DOCK_MARGIN_BOTTOM (4px) and nxbar's own                         \
-     * top inset both fall well inside this */
-
+/* Edge reservations are declared by generic, capability-owned surface
+ * plugins. No executable name, topmost heuristic or dock height enters the
+ * kernel. A popup can extend beyond the strip it reserves. */
 static int compositor_reserved_top_locked(int exclude_id) {
-  /* The old path started from compositor_titlebar_height(), forcing
-   * titlebar-less top-most windows below a margin that did not exist.
-   * Reserve only top-most windows anchored to the upper edge; window
-   * decoration does not define desktop reservation policy. */
   int top = 0;
-  for (int i = 0; i < MAX_WINDOWS; i++) {
-    if (windows[i].id == 0 || windows[i].id == exclude_id)
-      continue;
-    if (!windows[i].visible || !windows[i].top_most)
-      continue;
-    if (windows[i].y <= RESERVE_EDGE_SLOP) {
-      int reserved = windows[i].y + windows[i].height;
-      if (reserved > top)
-        top = reserved;
-    }
+  for (int i = 0; i < MAX_WINDOWS; ++i) {
+    const struct window *w = &windows[i];
+    if (w->id == 0 || w->id == exclude_id || !w->visible ||
+        !w->layout_registered ||
+        w->layout_anchor != OS1_SURFACE_LAYOUT_ANCHOR_TOP) continue;
+    int depth = (int)w->layout_margin + (int)w->layout_reserved;
+    if (depth > top) top = depth;
   }
   return top;
 }
 
 static int compositor_reserved_bottom_locked(int exclude_id) {
   int bottom = 0;
-  if (bb_height <= 0)
-    return 0;
-  int screen_h = bb_height;
-  for (int i = 0; i < MAX_WINDOWS; i++) {
-    if (windows[i].id == 0 || windows[i].id == exclude_id)
-      continue;
-    if (!windows[i].visible || !windows[i].top_most)
-      continue;
-    int gap = screen_h - (windows[i].y + windows[i].height);
-    if (gap >= 0 && gap <= RESERVE_EDGE_SLOP) {
-      int reserved = windows[i].height + gap;
-      if (reserved > bottom)
-        bottom = reserved;
-    }
+  for (int i = 0; i < MAX_WINDOWS; ++i) {
+    const struct window *w = &windows[i];
+    if (w->id == 0 || w->id == exclude_id || !w->visible ||
+        !w->layout_registered ||
+        w->layout_anchor != OS1_SURFACE_LAYOUT_ANCHOR_BOTTOM) continue;
+    int depth = (int)w->layout_margin + (int)w->layout_reserved;
+    if (depth > bottom) bottom = depth;
   }
   return bottom;
+}
+
+static void compositor_workarea_locked(int *top, int *bottom) {
+  *top = compositor_reserved_top_locked(0);
+  *bottom = compositor_reserved_bottom_locked(0);
+  if (*top > bb_height - 1) *top = bb_height - 1;
+  if (*bottom > bb_height - *top - 1)
+    *bottom = bb_height - *top - 1;
 }
 
 static int compositor_virtual_size(int physical_w, int physical_h,
@@ -532,27 +517,203 @@ static int compositor_virtual_size(int physical_w, int physical_h,
   return 0;
 }
 
+/* First pin the registered edge surfaces to the current logical desktop.
+ * Their source framebuffer is left intact: a client can resize/redraw it
+ * asynchronously without interrupting the current visible surface. */
+static void compositor_anchor_plugins_locked(void) {
+  for (int i = 0; i < MAX_WINDOWS; ++i) {
+    struct window *win = &windows[i];
+    if (win->id == 0 || !win->layout_registered) continue;
+    int desired_w = win->requested_draw_w > 0 ? win->requested_draw_w : win->width;
+    int desired_h = win->requested_draw_h > 0 ? win->requested_draw_h : win->height;
+    win->draw_w = desired_w < bb_width ? desired_w : bb_width;
+    int room = bb_height - (int)win->layout_margin;
+    if (room < 1) room = 1;
+    win->draw_h = desired_h < room ? desired_h : room;
+    win->x = (bb_width - win->draw_w) / 2;
+    if (win->layout_anchor == OS1_SURFACE_LAYOUT_ANCHOR_BOTTOM)
+      win->y = bb_height - (int)win->layout_margin - win->draw_h;
+    else
+      win->y = (int)win->layout_margin;
+    if (win->y < 0) win->y = 0;
+  }
+}
+
+/* Normal windows may be larger than their work area. In that case shrink
+ * only the PRESENTATION extent; retain requested/source sizes for recovery.
+ * The userland compositor scales the source and keeps titlebars on-screen. */
+static void compositor_fit_application_locked(struct window *win,
+                                               int top, int bottom) {
+  int title = win->top_most ? 0 : compositor_titlebar_height();
+  int room_w = bb_width;
+  int room_h = bb_height - top - bottom - title;
+  if (room_w < 1) room_w = 1;
+  if (room_h < 1) room_h = 1;
+  int desired_w = win->requested_draw_w > 0 ? win->requested_draw_w : win->width;
+  int desired_h = win->requested_draw_h > 0 ? win->requested_draw_h : win->height;
+  win->draw_w = desired_w < room_w ? desired_w : room_w;
+  win->draw_h = desired_h < room_h ? desired_h : room_h;
+  int xmax = bb_width - win->draw_w;
+  int ymin = top + title;
+  int ymax = bb_height - bottom - win->draw_h;
+  if (ymax < ymin) ymax = ymin;
+  if (win->x > xmax) win->x = xmax;
+  if (win->x < 0) win->x = 0;
+  if (win->y > ymax) win->y = ymax;
+  if (win->y < ymin) win->y = ymin;
+}
+
 static void compositor_apply_bounds_locked(int w, int h) {
   bb_width = w;
   bb_height = h;
-  for (int i = 0; i < MAX_WINDOWS; i++) {
-    if (windows[i].id == 0)
-      continue;
-    int dw = windows[i].draw_w > 0 ? windows[i].draw_w : windows[i].width;
-    int dh = windows[i].draw_h > 0 ? windows[i].draw_h : windows[i].height;
-    int margin_w = dw < 40 ? dw : 40;
-    int margin_h = dh < 40 ? dh : 40;
-    if (windows[i].x > bb_width - margin_w)
-      windows[i].x = bb_width - margin_w;
-    if (windows[i].x < 0)
-      windows[i].x = 0;
-    int top = compositor_reserved_top_locked(windows[i].id);
-    int bottom = compositor_reserved_bottom_locked(windows[i].id);
-    if (windows[i].y > bb_height - bottom - margin_h)
-      windows[i].y = bb_height - bottom - margin_h;
-    if (windows[i].y < top)
-      windows[i].y = top;
+  compositor_anchor_plugins_locked();
+  int top = 0, bottom = 0;
+  compositor_workarea_locked(&top, &bottom);
+  for (int i = 0; i < MAX_WINDOWS; ++i) {
+    if (windows[i].id == 0 || windows[i].layout_registered) continue;
+    compositor_fit_application_locked(&windows[i], top, bottom);
   }
+  expand_damage(0, 0, bb_width, bb_height);
+}
+
+static int compositor_layout_valid(const struct os1_surface_layout_v1 *req) {
+  if (req == NULL || req->abi_version != OS1_SURFACE_ABI_VERSION ||
+      req->struct_size != sizeof(*req) || req->window_id <= 0 ||
+      req->layer != OS1_SURFACE_LAYOUT_LAYER_OVERLAY ||
+      req->anchor < OS1_SURFACE_LAYOUT_ANCHOR_TOP ||
+      req->anchor > OS1_SURFACE_LAYOUT_ANCHOR_BOTTOM ||
+      req->order > (uint32_t)MAX_WINDOWS || req->margin > 128U ||
+      req->reserved == 0U || req->reserved > 2048U ||
+      req->width == 0U || req->width > 4096U ||
+      req->height == 0U || req->height > 4096U)
+    return -EINVAL;
+  return 0;
+}
+
+int compositor_layout_apply(const struct os1_surface_layout_v1 *req,
+                            int caller_pid) {
+  int valid = compositor_layout_valid(req);
+  if (valid != 0) return valid;
+  struct window_info owner;
+  int found = compositor_window_info(req->window_id, &owner);
+  if (found != 0) return found;
+  if (caller_pid != owner.pid) return -EPERM;
+  /* Reuse the existing checked surface reallocation path (outside the
+   * short metadata lock) instead of duplicating a pixel allocator. */
+  int resized = compositor_resize_window(req->window_id,
+                                          (int)req->width, (int)req->height);
+  if (resized != 0) return -ENOMEM;
+  uint64_t flags;
+  int status = -ESRCH;
+  spin_lock_irqsave(&compositor_lock, &flags);
+  for (int i = 0; i < MAX_WINDOWS; ++i) {
+    struct window *win = &windows[i];
+    if (win->id != req->window_id || win->pid != caller_pid) continue;
+    win->layout_registered = 1;
+    win->layout_anchor = req->anchor;
+    win->layout_layer = req->layer;
+    win->layout_order = req->order;
+    win->layout_margin = req->margin;
+    win->layout_reserved = req->reserved;
+    win->top_most = 1;
+    compositor_apply_bounds_locked(bb_width, bb_height);
+    status = 0;
+  }
+  spin_unlock_irqrestore(&compositor_lock, flags);
+  return status;
+}
+
+int compositor_layout_query(struct os1_surface_layout_v1 *req) {
+  if (req == NULL || req->abi_version != OS1_SURFACE_ABI_VERSION ||
+      req->struct_size != sizeof(*req) || req->window_id < 0) return -EINVAL;
+  int target = req->window_id, found = target == 0 ? 1 : 0;
+  uint64_t flags;
+  spin_lock_irqsave(&compositor_lock, &flags);
+  int top = 0, bottom = 0;
+  compositor_workarea_locked(&top, &bottom);
+  *req = (struct os1_surface_layout_v1){
+      .abi_version = OS1_SURFACE_ABI_VERSION, .struct_size = sizeof(*req),
+      .window_id = target, .work_x = 0, .work_y = top,
+      .work_width = (uint32_t)bb_width,
+      .work_height = (uint32_t)(bb_height - top - bottom)};
+  for (int i = 0; i < MAX_WINDOWS && !found; ++i) {
+    const struct window *win = &windows[i];
+    if (win->id != target) continue;
+    req->anchor = win->layout_anchor;
+    req->layer = win->layout_layer;
+    req->order = win->layout_order;
+    req->margin = win->layout_margin;
+    req->reserved = win->layout_reserved;
+    req->width = (uint32_t)win->draw_w;
+    req->height = (uint32_t)win->draw_h;
+    req->x = win->x;
+    req->y = win->y;
+    found = 1;
+  }
+  spin_unlock_irqrestore(&compositor_lock, flags);
+  return found ? 0 : -ESRCH;
+}
+
+/* Read-only snapshot for ROOT and USER inspection through object resources.
+ * The exposed base is always the current physical extent in Auto mode. */
+int compositor_workspace_query(struct os1_display_workspace_v1 *out) {
+  if (out == NULL) return -EINVAL;
+  uint64_t flags;
+  spin_lock_irqsave(&compositor_lock, &flags);
+  const struct workspace_policy_state *policy = workspace_policy();
+  *out = (struct os1_display_workspace_v1){
+      .abi_version = OS1_SURFACE_ABI_VERSION, .struct_size = sizeof(*out),
+      .mode = policy->mode, .zoom_percent = (uint32_t)desktop_zoom,
+      .base_width = (uint32_t)(policy->mode == OS1_DISPLAY_WORKSPACE_AUTO
+                                    ? native_w : policy->base_w),
+      .base_height = (uint32_t)(policy->mode == OS1_DISPLAY_WORKSPACE_AUTO
+                                     ? native_h : policy->base_h),
+      .physical_width = (uint32_t)native_w,
+      .physical_height = (uint32_t)native_h,
+      .logical_width = (uint32_t)bb_width,
+      .logical_height = (uint32_t)bb_height};
+  spin_unlock_irqrestore(&compositor_lock, flags);
+  return 0;
+}
+
+/* Apply an explicit ROOT workspace choice. No hardware mode changes occur
+ * here, no per-executable privileges, and no duplicate userland renderer. */
+int compositor_workspace_set(const struct os1_display_workspace_v1 *request) {
+  if (request == NULL || request->abi_version != OS1_SURFACE_ABI_VERSION ||
+      request->struct_size != sizeof(*request) ||
+      request->mode > OS1_DISPLAY_WORKSPACE_MANUAL ||
+      request->zoom_percent < OS1_DISPLAY_ZOOM_MIN_PERCENT ||
+      request->zoom_percent > OS1_DISPLAY_ZOOM_MAX_PERCENT) return -EINVAL;
+  if (request->mode == OS1_DISPLAY_WORKSPACE_AUTO &&
+      (request->base_width != 0U || request->base_height != 0U))
+    return -EINVAL;
+  if (request->mode == OS1_DISPLAY_WORKSPACE_MANUAL &&
+      (request->base_width < 64U || request->base_height < 64U ||
+       request->base_width > 8192U || request->base_height > 8192U))
+    return -ERANGE;
+  uint64_t flags;
+  int w = 0, h = 0;
+  spin_lock_irqsave(&compositor_lock, &flags);
+  int base_w = request->mode == OS1_DISPLAY_WORKSPACE_AUTO
+                   ? native_w : (int)request->base_width;
+  int base_h = request->mode == OS1_DISPLAY_WORKSPACE_AUTO
+                   ? native_h : (int)request->base_height;
+  int valid = compositor_virtual_size(base_w, base_h,
+                                       (int)request->zoom_percent, &w, &h);
+  if (valid == 0 && (size_t)w * (size_t)h > (16U * 1024U * 1024U))
+    valid = -ERANGE;
+  if (valid == 0) {
+    struct workspace_policy_state *policy = workspace_policy();
+    policy->mode = request->mode;
+    policy->base_w = request->mode == OS1_DISPLAY_WORKSPACE_MANUAL ? base_w : 0;
+    policy->base_h = request->mode == OS1_DISPLAY_WORKSPACE_MANUAL ? base_h : 0;
+    desktop_zoom = (int)request->zoom_percent;
+    if (w != bb_width || h != bb_height)
+      compositor_apply_bounds_locked(w, h);
+  }
+  spin_unlock_irqrestore(&compositor_lock, flags);
+  if (valid == 0) nx_surface_changed();
+  return valid;
 }
 
 /* A physical mode change updates only the output reference. The logical
@@ -563,10 +724,20 @@ void compositor_resize(int w, int h) {
   int logical_w = 0, logical_h = 0, changed = 0, zoom = 0;
   uint64_t flags;
   spin_lock_irqsave(&compositor_lock, &flags);
+  /* Surface reads poll the provider every frame. Only a transition is a
+   * resize; publishing and logging unchanged dimensions saturates NXPaX/UART
+   * and needlessly wakes the userland compositor. */
+  if (native_w == w && native_h == h) {
+    spin_unlock_irqrestore(&compositor_lock, flags);
+    return;
+  }
   native_w = w;
   native_h = h;
   zoom = desktop_zoom;
-  if (compositor_virtual_size(w, h, zoom, &logical_w, &logical_h) == 0) {
+  const struct workspace_policy_state *policy = workspace_policy();
+  int base_w = policy->mode == OS1_DISPLAY_WORKSPACE_AUTO ? w : policy->base_w;
+  int base_h = policy->mode == OS1_DISPLAY_WORKSPACE_AUTO ? h : policy->base_h;
+  if (compositor_virtual_size(base_w, base_h, zoom, &logical_w, &logical_h) == 0) {
     changed = logical_w != bb_width || logical_h != bb_height;
     if (changed)
       compositor_apply_bounds_locked(logical_w, logical_h);
@@ -590,7 +761,12 @@ int compositor_set_zoom(int percent) {
   spin_lock_irqsave(&compositor_lock, &flags);
   physical_w = native_w;
   physical_h = native_h;
-  if (compositor_virtual_size(physical_w, physical_h, percent, &logical_w,
+  const struct workspace_policy_state *policy = workspace_policy();
+  int base_w = policy->mode == OS1_DISPLAY_WORKSPACE_AUTO
+                   ? physical_w : policy->base_w;
+  int base_h = policy->mode == OS1_DISPLAY_WORKSPACE_AUTO
+                   ? physical_h : policy->base_h;
+  if (compositor_virtual_size(base_w, base_h, percent, &logical_w,
                               &logical_h) != 0) {
     spin_unlock_irqrestore(&compositor_lock, flags);
     return -ENODEV;
@@ -647,6 +823,8 @@ int compositor_create_window(int x, int y, int w, int h, const char *title,
   fresh.height = h;
   fresh.draw_w = w;
   fresh.draw_h = h;
+  fresh.requested_draw_w = w;
+  fresh.requested_draw_h = h;
   fresh.visible = 1;
   fresh.pid = pid;
   fresh.bg_color = bg;
@@ -719,6 +897,7 @@ int compositor_create_window(int x, int y, int w, int h, const char *title,
   fresh.z_order = window_count;
   windows[slot] = fresh;
   window_count++;
+  compositor_apply_bounds_locked(bb_width, bb_height);
   expand_damage(x, y - compositor_titlebar_height(), w,
                 h + compositor_titlebar_height());
   compositor_dirty = 1;
@@ -993,7 +1172,9 @@ long compositor_window_snapshot(struct os1_window_snapshot_v1 *user_snapshot) {
     result.height = win->height;
     result.draw_width = win->draw_w > 0 ? win->draw_w : win->width;
     result.draw_height = win->draw_h > 0 ? win->draw_h : win->height;
-    result.z_order = win->z_order;
+    result.z_order = win->layout_registered &&
+                             win->layout_layer == OS1_SURFACE_LAYOUT_LAYER_OVERLAY
+                         ? 100000 + (int)win->layout_order : win->z_order;
     result.background_argb = win->bg_color;
     result.pixel_count = (size_t)win->width * (size_t)win->height;
     result.pixels = request.pixels;
@@ -1146,6 +1327,7 @@ void compositor_destroy_window(int window_id) {
 
     if (refocus)
       __focus_topmost_locked();
+    compositor_apply_bounds_locked(bb_width, bb_height);
     break;
   }
   spin_unlock_irqrestore(&compositor_lock, flags);
@@ -1187,6 +1369,7 @@ void compositor_destroy_windows_by_pid(int pid) {
 
   if (refocus)
     __focus_topmost_locked();
+  if (retired_count > 0) compositor_apply_bounds_locked(bb_width, bb_height);
   spin_unlock_irqrestore(&compositor_lock, flags);
 
   for (int i = 0; i < retired_count; i++)
@@ -1279,6 +1462,10 @@ void compositor_move_window(int window_id, int x, int y) {
   spin_lock_irqsave(&compositor_lock, &flags);
   for (int i = 0; i < MAX_WINDOWS; i++) {
     if (windows[i].id == window_id) {
+      /* Registered plugins follow their edge declaration, not arbitrary
+       * legacy WM coordinates. This also prevents a delayed old drag from
+       * leaving an overlay suspended after a logical mode transition. */
+      if (windows[i].layout_registered) continue;
       int dw = windows[i].draw_w > 0 ? windows[i].draw_w : windows[i].width;
       int dh = windows[i].draw_h > 0 ? windows[i].draw_h : windows[i].height;
       int title_h = compositor_titlebar_height();
@@ -1288,9 +1475,20 @@ void compositor_move_window(int window_id, int x, int y) {
 
       windows[i].x = x;
       windows[i].y = y;
+      /* Dragged application windows follow the exact same resolved workarea
+       * as created/resized windows. A mouse move must not bypass the top or
+       * bottom edge reservations, even when dragging rapidly across modes. */
+      int top = 0, bottom = 0;
+      compositor_workarea_locked(&top, &bottom);
+      compositor_fit_application_locked(&windows[i], top, bottom);
+      int final_w = windows[i].draw_w > 0 ?
+                    windows[i].draw_w : windows[i].width;
+      int final_h = windows[i].draw_h > 0 ?
+                    windows[i].draw_h : windows[i].height;
 
-      /* Damage the NEW footprint. */
-      expand_damage(windows[i].x, windows[i].y - title_h, dw, dh + title_h);
+      /* Damage the NEW, bounded footprint. */
+      expand_damage(windows[i].x, windows[i].y - title_h,
+                    final_w, final_h + title_h);
       compositor_dirty = 1;
       break;
     }
@@ -1318,8 +1516,14 @@ int compositor_set_window_draw_size(int id, int w, int h) {
   for (int i = 0; i < MAX_WINDOWS && owner == -ESRCH; ++i) {
     struct window *win = &windows[i];
     if (win->id != id) continue;
+    if (win->layout_registered) {
+      owner = -EPERM; /* Edge plugins are resized only via their own layout. */
+      continue;
+    }
     owner = win->pid;
     win->presentation_managed = 1;
+    win->requested_draw_w = w;
+    win->requested_draw_h = h;
     int old_w = win->draw_w > 0 ? win->draw_w : win->width;
     int old_h = win->draw_h > 0 ? win->draw_h : win->height;
     if (old_w != w || old_h != h) {
@@ -1327,6 +1531,7 @@ int compositor_set_window_draw_size(int id, int w, int h) {
       expand_damage(win->x, win->y - title, old_w, old_h + title);
       win->draw_w = w;
       win->draw_h = h;
+      compositor_apply_bounds_locked(bb_width, bb_height);
       expand_damage(win->x, win->y - title, w, h + title);
       compositor_dirty = 1;
     }
@@ -1389,9 +1594,12 @@ int compositor_resize_window(int window_id, int w, int h) {
   win->width = w;
   win->height = h;
   if (follows_logical) {
+    win->requested_draw_w = w;
+    win->requested_draw_h = h;
     win->draw_w = w;
     win->draw_h = h;
   }
+  compositor_apply_bounds_locked(bb_width, bb_height);
   win->has_alpha = ((win->bg_color >> 24) != 0xFF);
 
   /* Reflow the terminal to the new cell grid. */
@@ -1753,7 +1961,8 @@ void compositor_set_window_flags(int window_id, int flags_val) {
   spin_lock_irqsave(&compositor_lock, &flags);
   for (int i = 0; i < MAX_WINDOWS; i++) {
     if (windows[i].id == window_id) {
-      windows[i].top_most = (flags_val & 1) ? 1 : 0;
+      if (!windows[i].layout_registered)
+        windows[i].top_most = (flags_val & 1) ? 1 : 0;
       windows[i].passive = (flags_val & 8) ? 1 : 0; /* bit 3: click-through */
       if (flags_val & 4)
         windows[i].visible = 0; /* bit 2: hide window */
@@ -1772,6 +1981,10 @@ void compositor_set_window_flags(int window_id, int flags_val) {
                       ddw, ddh + compositor_titlebar_height());
         compositor_dirty = 1;
       }
+      /* A hidden plugin releases its reservation immediately; showing it
+       * restores the reservation before any ordinary window can overlap. */
+      if (windows[i].layout_registered)
+        compositor_apply_bounds_locked(bb_width, bb_height);
       break;
     }
   }

@@ -63,3 +63,22 @@ For low-level QEMU diagnostics without GRUB, use `run-direct`. The standalone de
     make clean ARCH=aarch64
 
 Only the selected architecture's module build output is removed.
+
+## Surface layout object boundary (ABI r6)
+
+`contracts/surface-v1.json` owns the canonical wire schema, generated
+into `include/abi/surface.h` and mirrored in NX-SDK. The existing
+`resources/window_compat.c` provides the `surface/layout-v1` object
+resource: ROOT/MACHINE privilege and exact PID ownership are checked
+before registering an edge anchor, reservation, and overlay Z order.
+The transitional `graphics/compositor.c` keeps generic surface
+metadata and workarea bounds, with no knowledge of `nxbar` or `nxui`
+or any project theme. Hiding/destroying a plugin releases its strip;
+ordinary application presentation fits in the workarea without
+destroying requested source geometry.
+
+This is **not** completion of the migration away from kernel
+graphics. Emergency display/NXPAX callers remain subject to audit.
+No new syscalls were introduced. In the integrated QEMU diagnostics
+on 2026-11-19 kernel KTEST passed 36/36 (amd64) and 37/37 (aarch64).
+Full-project Power12 qualification remains open.

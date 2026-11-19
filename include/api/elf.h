@@ -1,7 +1,7 @@
-#ifndef _KERNEL_ELF_H
-#define _KERNEL_ELF_H
+#ifndef NEXS_API_ELF_H
+#define NEXS_API_ELF_H
 
-#include <kernel/types.h>
+#include <stdint.h>
 
 /* ELF Header */
 #define EI_NIDENT 16
@@ -70,4 +70,4 @@ typedef struct {
 #define ELFMAG "\177ELF"
 #define SELFMAG 4
 
-#endif
+#endif /* NEXS_API_ELF_H */

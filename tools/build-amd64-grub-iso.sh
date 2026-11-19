@@ -58,12 +58,19 @@ while IFS='|' read -r project_id title image marker; do
 done < <(python3 "$CATALOG_TOOL" --catalog "$CATALOG" list)
 
 cat > "$STAGE/boot/grub/grub.cfg" <<'GRUB_HEADER'
+# GRUB owns its visual terminal. UART remains kernel diagnostic only.
+# Select firmware-reported video modes; do not hardcode QEMU dimensions or
+# leak the bootloader's VGA text geometry into the operating system scanout.
 set timeout=5
-insmod serial
 insmod multiboot2
-serial --unit=0 --speed=115200 --word=8 --parity=no --stop=1
-terminal_input console serial
-terminal_output console serial
+insmod all_video
+insmod gfxterm
+set gfxmode=auto
+set gfxpayload=keep
+terminal_input console
+if ! terminal_output gfxterm; then
+    terminal_output console
+fi
 GRUB_HEADER
 python3 "$CATALOG_TOOL" --catalog "$CATALOG" grub-amd64     --kernel /boot/kernel.elf --image-dir /boot/user-images     >> "$STAGE/boot/grub/grub.cfg"
 

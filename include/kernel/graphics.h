@@ -32,6 +32,11 @@ void compositor_init(void);
 void compositor_resize(int w, int h);
 /* Current logical desktop geometry used by windows and pointer routing. */
 void compositor_get_size(int *w, int *h);
+/* Kernel owns surface geometry; Auto/Manual selection comes from ROOT
+ * userland over the existing resource object protocol. */
+struct os1_display_workspace_v1;
+int compositor_workspace_query(struct os1_display_workspace_v1 *out) NX_MUST_USE;
+int compositor_workspace_set(const struct os1_display_workspace_v1 *request) NX_MUST_USE;
 /* Change logical UI scale only; the physical GPU mode is unchanged. */
 int compositor_set_zoom(int percent) NX_MUST_USE;
 int compositor_create_window(int x, int y, int w, int h, const char *title,
@@ -49,6 +54,11 @@ int compositor_window_grid(int window_id, int *cols, int *rows) NX_MUST_USE;
 void compositor_focus_changed(int new_pid);
 uint32_t *compositor_get_buffer(int window_id);
 void compositor_move_window(int window_id, int x, int y);
+/* Generic userland surface plugin placement. Kernel stores no UI identities. */
+struct os1_surface_layout_v1;
+int compositor_layout_apply(const struct os1_surface_layout_v1 *layout,
+                            int caller_pid) NX_MUST_USE;
+int compositor_layout_query(struct os1_surface_layout_v1 *layout) NX_MUST_USE;
 /* compositor_resize_window: resize a window's logical surface to w x h
  * (reallocates the buffer, reflows the terminal).  Process context only.
  * Returns 0 on success, -1 on failure.  Backs SYS_WINDOW_RESIZE (GFX-DYN-01). */

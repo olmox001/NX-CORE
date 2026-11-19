@@ -21,7 +21,16 @@
     "OS1_DISPLAY_MODE_CURRENT": "1U",
     "OS1_DISPLAY_MODE_PREFERRED": "2U",
     "OS1_DISPLAY_MODE_INTERLACED": "4U",
-    "OS1_DISPLAY_MODE_MAX": "32U"
+    "OS1_DISPLAY_MODE_MAX": "32U",
+    "OS1_RESOURCE_DISPLAY_WORKSPACE": "\"display/0/workspace\"",
+    "OS1_DISPLAY_WORKSPACE_AUTO": "0U",
+    "OS1_DISPLAY_WORKSPACE_MANUAL": "1U",
+    "OS1_RESOURCE_SURFACE_LAYOUT": "\"surface/layout-v1\"",
+    "OS1_SURFACE_LAYOUT_ANCHOR_NONE": "0U",
+    "OS1_SURFACE_LAYOUT_ANCHOR_TOP": "1U",
+    "OS1_SURFACE_LAYOUT_ANCHOR_BOTTOM": "2U",
+    "OS1_SURFACE_LAYOUT_LAYER_NORMAL": "0U",
+    "OS1_SURFACE_LAYOUT_LAYER_OVERLAY": "1U"
   },
   "structs": [
     {
@@ -251,6 +260,148 @@
           "uint32_t",
           "flags",
           44
+        ]
+      ]
+    },
+    {
+      "name": "os1_display_workspace_v1",
+      "size": 40,
+      "fields": [
+        [
+          "uint32_t",
+          "abi_version",
+          0
+        ],
+        [
+          "uint32_t",
+          "struct_size",
+          4
+        ],
+        [
+          "uint32_t",
+          "mode",
+          8
+        ],
+        [
+          "uint32_t",
+          "zoom_percent",
+          12
+        ],
+        [
+          "uint32_t",
+          "base_width",
+          16
+        ],
+        [
+          "uint32_t",
+          "base_height",
+          20
+        ],
+        [
+          "uint32_t",
+          "physical_width",
+          24
+        ],
+        [
+          "uint32_t",
+          "physical_height",
+          28
+        ],
+        [
+          "uint32_t",
+          "logical_width",
+          32
+        ],
+        [
+          "uint32_t",
+          "logical_height",
+          36
+        ]
+      ]
+    },
+    {
+      "name": "os1_surface_layout_v1",
+      "size": 64,
+      "fields": [
+        [
+          "uint32_t",
+          "abi_version",
+          0
+        ],
+        [
+          "uint32_t",
+          "struct_size",
+          4
+        ],
+        [
+          "int32_t",
+          "window_id",
+          8
+        ],
+        [
+          "uint32_t",
+          "anchor",
+          12
+        ],
+        [
+          "uint32_t",
+          "layer",
+          16
+        ],
+        [
+          "uint32_t",
+          "order",
+          20
+        ],
+        [
+          "uint32_t",
+          "margin",
+          24
+        ],
+        [
+          "uint32_t",
+          "reserved",
+          28
+        ],
+        [
+          "uint32_t",
+          "width",
+          32
+        ],
+        [
+          "uint32_t",
+          "height",
+          36
+        ],
+        [
+          "int32_t",
+          "x",
+          40
+        ],
+        [
+          "int32_t",
+          "y",
+          44
+        ],
+        [
+          "int32_t",
+          "work_x",
+          48
+        ],
+        [
+          "int32_t",
+          "work_y",
+          52
+        ],
+        [
+          "uint32_t",
+          "work_width",
+          56
+        ],
+        [
+          "uint32_t",
+          "work_height",
+          60
         ]
       ]
     }

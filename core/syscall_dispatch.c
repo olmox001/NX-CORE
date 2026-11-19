@@ -83,6 +83,7 @@
 #include <kernel/object.h>
 #include <kernel/printk.h>
 #include <kernel/registry.h>
+#include <kernel/resource.h>
 #include <kernel/sched.h>
 #include <kernel/string.h>
 #include <kernel/types.h>
@@ -680,17 +681,16 @@ hal_frame_t *kernel_syscall_dispatcher(hal_frame_t *frame) {
     break;
   }
   case SYS_SET_DISPLAY_MODE: {
-    /* GFX-DYN-01: change resolution at runtime; the desktop adapts.  A
-     * system-level action → needs CAP_WINDOW. */
+    /* Legacy physical-mode control. Scanout changes publish new hardware facts;
+     * logical workspace policy remains independent in ring-3. */
     if (!proc_has_cap(current_process, CAP_WINDOW)) {
       hal_frame_set_return(frame, -EPERM);
       break;
     }
     extern int gpu_set_mode(int w, int h);
-    extern void compositor_resize(int w, int h);
     int r = gpu_set_mode((int)arg0, (int)arg1);
     if (r == 0)
-      compositor_resize((int)arg0, (int)arg1);
+      nx_surface_changed();
     hal_frame_set_return(frame, r);
     break;
   }
@@ -714,21 +714,20 @@ hal_frame_t *kernel_syscall_dispatcher(hal_frame_t *frame) {
     break;
   }
   case SYS_DISPLAY_POLL: {
-    /* Apply a pending host display-change in process context (init's supervisor
-     * loop polls this so the heavy set_mode/realloc never runs in the IRQ
-     * tick). Machine-level only.  Returns 1 if the desktop was resized, else 0.
-     */
+    /* Apply a pending host display change in process context (init supervisor
+     * polling keeps mode setup out of the IRQ path). Machine-level only.
+     * Returns 1 when the physical provider changed; workspace policy is not
+     * mutated here. */
     if (!proc_is_machine(current_process)) {
       hal_frame_set_return(frame, -EPERM);
       break;
     }
     extern int gpu_poll_events(int *w, int *h);
     extern int gpu_set_mode(int w, int h);
-    extern void compositor_resize(int w, int h);
     int w = 0, h = 0;
     if (gpu_poll_events(&w, &h) == 1) {
       if (gpu_set_mode(w, h) == 0)
-        compositor_resize(w, h);
+        nx_surface_changed();
       hal_frame_set_return(frame, 1);
     } else {
       hal_frame_set_return(frame, 0);
