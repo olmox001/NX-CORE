@@ -1,5 +1,6 @@
 #include <kernel/resource.h>
 #include <kernel/object.h>
+#include <kernel/sched.h>
 #include <kernel/hal_uaccess.h>
 #include <kernel/string.h>
 #include <drivers/input.h>
@@ -20,12 +21,18 @@ static long input_read(void *state, void *user, size_t size) {
 
 static const struct nx_resource_ops input_ops = {.read = input_read};
 
-int nx_input_resource_acquire(const char *path, uint32_t rights,
-                              struct kobject *object) {
+int nx_input_resource_acquire(struct process *caller, const char *path,
+                              uint32_t rights, struct kobject *object) {
   unsigned role;
   if (!strcmp(path, OS1_RESOURCE_KEYBOARD)) role = OS1_INPUT_ROLE_KEYBOARD;
   else if (!strcmp(path, OS1_RESOURCE_POINTER)) role = OS1_INPUT_ROLE_MOUSE;
   else return -ENOENT;
+  /* Acquisition is a service-specific hardware authority. Neither focus
+   * owners nor terminal clients must hold this bit: their separate IPC
+   * queues already carry routed key and pointer events. */
+  uint32_t needed = role == OS1_INPUT_ROLE_KEYBOARD ? CAP_KEYBOARD_RAW : CAP_POINTER_RAW;
+  if (caller == NULL || !proc_has_cap(caller, needed))
+    return -EPERM;
   const uint32_t allowed = OS1_RIGHT_READ | OS1_RIGHT_TRANSFER | OS1_RIGHT_DUPLICATE;
   if (!(rights & OS1_RIGHT_READ) || (rights & ~allowed)) return -EPERM;
   object->resource_ops = &input_ops;

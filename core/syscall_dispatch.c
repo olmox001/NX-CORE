@@ -150,7 +150,6 @@ int sys_set_font(void *data, size_t size);
 #include <os1_compositor.h>
 #include <os1_input.h>
 
-extern int keyboard_focus_pid;
 
 /*
  * kernel_syscall_dispatcher - dispatch a syscall from the saved register frame.
@@ -261,12 +260,8 @@ static int spawn_redirect_one(struct process *child,
     return process_redirect_child_fd(child, redirect->child_fd,
                                       redirect->parent_fd);
   if (!proc_is_privileged(current_process)) return -EPERM;
-  /* Existing PROC-REF-01 obligation: this legacy foreign-table path still
-   * needs a process lifetime pin. Do not allocate while holding sched_lock. */
-  struct process *source = process_find_by_pid(redirect->source_pid);
-  if (source == NULL) return -ESRCH;
-  return process_redirect_child_fd_from(source, child, redirect->child_fd,
-                                         redirect->parent_fd);
+  return process_redirect_child_fd_from(redirect->source_pid, child,
+                                        redirect->child_fd, redirect->parent_fd);
 }
 
 static int spawn_prepare(struct process *child,
@@ -305,6 +300,8 @@ static long spawn_dispatch_options(struct spawn_options *options) {
   int entered = process_creation_begin();
   if (entered != 0) return entered;
   uint8_t path_level = level_for_path(options->path);
+  if ((options->flags & SPAWN_FLAG_USER) && path_level < PLVL_USER)
+    path_level = PLVL_USER;
   if (!options->use_caps || options->level < path_level)
     options->level = path_level;
   /* PROC_CREATED cannot run and kill is deferred until finalize/abort.
@@ -334,6 +331,7 @@ static long dispatch_spawn(const char *path, uint8_t level, uint32_t caps,
 
 struct spawn_user_copy {
   struct os1_spawn_request_v1 request;
+  struct os1_spawn_request_v2 authority;
   struct spawn_options options;
   char path[OS1_SPAWN_PATH_MAX];
   char text[SPAWN_MAX_ARGS][SPAWN_ARG_LEN];
@@ -343,11 +341,31 @@ struct spawn_user_copy {
 
 static int spawn_copy_header(struct spawn_user_copy *copy,
                               const struct os1_spawn_request_v1 *user) {
-  if (hal_copy_from_user(&copy->request, user, sizeof(copy->request)) != 0)
+  uint32_t selector[2] = {0U, 0U};
+  if (hal_copy_from_user(selector, user, sizeof(selector)) != 0)
     return -EFAULT;
+  if (selector[0] == OS1_SPAWN_REQUEST_VERSION &&
+      selector[1] == sizeof(copy->request)) {
+    if (hal_copy_from_user(&copy->request, user, sizeof(copy->request)) != 0)
+      return -EFAULT;
+  } else if (selector[0] == OS1_SPAWN_REQUEST_AUTH_VERSION &&
+             selector[1] == sizeof(copy->authority)) {
+    if (hal_copy_from_user(&copy->authority, user,
+                           sizeof(copy->authority)) != 0) return -EFAULT;
+    copy->request = copy->authority.base;
+    if (copy->authority.level >= PLVL_COUNT ||
+        (copy->authority.caps & ~(CAP_ALL | CAP_WINDOW_MANAGE |
+                                    CAP_KEYBOARD_RAW | CAP_POINTER_RAW)) != 0U)
+      return -EINVAL;
+    copy->options.level = (uint8_t)copy->authority.level;
+    copy->options.caps = copy->authority.caps;
+    copy->options.use_caps = 1;
+  } else {
+    return -EINVAL;
+  }
   const struct os1_spawn_request_v1 *request = &copy->request;
-  if (request->abi_version != OS1_SPAWN_REQUEST_VERSION ||
-      request->struct_size != sizeof(*request) || request->reserved != 0U ||
+  if (request->abi_version != selector[0] ||
+      request->struct_size != selector[1] || request->reserved != 0U ||
       request->argc > SPAWN_MAX_ARGS || request->nredir > SPAWN_MAX_REDIR ||
       (request->flags & ~(uint32_t)SPAWN_FLAGS_ALL) != 0U) return -EINVAL;
   if (hal_copy_string_from_user(copy->path,
@@ -360,7 +378,8 @@ static int spawn_copy_header(struct spawn_user_copy *copy,
       (const void *)(uintptr_t)request->redirections,
       request->nredir * sizeof(copy->redirections[0])) != 0) return -EFAULT;
   copy->options.path = copy->path;
-  copy->options.level = PLVL_USER;
+  if (request->abi_version == OS1_SPAWN_REQUEST_VERSION)
+    copy->options.level = PLVL_USER;
   copy->options.argc = (int)request->argc;
   copy->options.flags = request->flags;
   copy->options.nredir = (int)request->nredir;
@@ -533,7 +552,7 @@ hal_frame_t *kernel_syscall_dispatcher(hal_frame_t *frame) {
                           ? OS1_RIGHT_WRITE
                           : (OS1_RIGHT_READ | OS1_RIGHT_WRITE);
     hal_frame_set_return(frame, sys_handle_create(OS1_NS_FS, (const char *)arg0,
-                                                rights, OBJ_TYPE_FILE));
+                                                rights | OS1_RIGHT_DUPLICATE, OBJ_TYPE_FILE));
   } break;
   case SYS_CLOSE:
     /* close(fd) ≡ drop the handle; frees the object at its last reference. */
@@ -865,22 +884,6 @@ hal_frame_t *kernel_syscall_dispatcher(hal_frame_t *frame) {
     hal_frame_set_return(frame, rc);
     break;
   }
-  case SYS_INPUT_RAW_READ: {
-    struct os1_raw_input_event_v1 event;
-    long result;
-    if (!proc_has_cap(current_process, CAP_WINDOW) ||
-        !proc_is_privileged(current_process)) {
-      hal_frame_set_return(frame, -EPERM);
-      break;
-    }
-    result = OS1libkernel_input_read_raw(&event, (unsigned)arg1,
-                                         (unsigned)arg2);
-    if (result > 0 &&
-        hal_copy_to_user((void *)arg0, &event, sizeof(event)) != 0)
-      result = -EFAULT;
-    hal_frame_set_return(frame, result);
-    break;
-  }
   case SYS_WINDOW_MOVE:
     if (!proc_has_cap(current_process, CAP_WINDOW) ||
         !proc_has_cap(current_process, CAP_WINDOW_MANAGE)) {
@@ -1143,14 +1146,8 @@ hal_frame_t *kernel_syscall_dispatcher(hal_frame_t *frame) {
       hal_frame_set_return(frame, -EPERM);
       break;
     }
-    sched_set_focus_pid(
-        (int)arg0); /* push the focus hint to the scheduler (#67) */
-    /* Caret follows the input window: clear it off whoever just lost focus. */
-    {
-      extern void compositor_focus_changed(int new_pid);
-      compositor_focus_changed((int)arg0);
-    }
-    hal_frame_set_return(frame, 0);
+    hal_frame_set_return(frame,
+        compositor_focus_window(compositor_get_window_by_pid((int)arg0)));
     break;
   case SYS_WAIT: {
     /* Ambient wait, arg1 = OPTIONAL user int* for the exit status.

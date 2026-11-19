@@ -14,11 +14,13 @@ struct nx_resource_ops {
 };
 int nx_resource_acquire(struct process *caller, const char *path,
                         uint32_t rights, struct kobject *object);
+int nx_null_resource_acquire(const char *path, uint32_t rights,
+                             struct kobject *object);
 int nx_nxpax_resource_acquire(struct process *caller, uint32_t rights,
                               struct kobject *object);
 void nx_surface_changed(void);
-int nx_input_resource_acquire(const char *path, uint32_t rights,
-                              struct kobject *object);
+int nx_input_resource_acquire(struct process *caller, const char *path,
+                              uint32_t rights, struct kobject *object);
 int nx_window_resource_acquire(const char *path, uint32_t rights,
                                struct kobject *object);
 void nx_buffer_init(void);

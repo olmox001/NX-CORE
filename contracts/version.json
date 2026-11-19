@@ -2,7 +2,7 @@
   "schema": 1,
   "scopes": {
     "abi": {
-      "revision": 6,
+      "revision": 12,
       "paths": [
         "include/abi"
       ],

@@ -13,6 +13,7 @@ KERN_C_SOURCES = \
     $(KERNEL_DIR)/core/object_boot.c \
     $(KERNEL_DIR)/fs/object_boot_provider.c \
     $(KERNEL_DIR)/resources/display.c \
+    $(KERNEL_DIR)/resources/null.c \
     $(KERNEL_DIR)/resources/nxpax.c \
     $(KERNEL_DIR)/resources/buffer.c \
     $(KERNEL_DIR)/resources/input.c \

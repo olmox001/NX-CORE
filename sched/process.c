@@ -385,17 +385,6 @@ DEFINE_SPINLOCK(sched_lock);
  * Protected by sched_lock. */
 static int rr_cpu = 0;
 
-/* Keyboard focus management. keyboard_focus_pid: scheduler-owned focus
- * HINT — which PID keystrokes route to (keyboard driver) and which the
- * schedule() focus boost favours. Pushed down by the compositor (window
- * activate/close) and by SYS_SET_FOCUS; the scheduler only reads it
- * (SCHED-01, resolved). Mutate ONLY via sched_set_focus_pid() (GFX-COMP-01
- * #67) so the scheduler is the single owner and the compositor never
- * writes this global directly. A single int => atomic access => lockless
- * reads (it is a hint, a stale read mis-targets one boost for one tick and
- * is harmless). */
-int keyboard_focus_pid = 7; /* Default to Shell PID */
-
 /* Bounded focus boost (SCHED-01): the focused process is picked first for
  * snappy foreground response, but never more than FOCUS_BOOST_MAX times in
  * a row — after that, one fair round-robin pick runs, so a CPU-bound
@@ -910,13 +899,20 @@ void process_init(void) {
   }
 }
 
-/* sched_set_focus_pid - the ONE mutation point for keyboard_focus_pid.
- * Callers: compositor (focus change / window teardown) and
- * SYS_SET_FOCUS. */
-void sched_set_focus_pid(int pid) { keyboard_focus_pid = pid; }
+/* The scheduler owns a single seat focus hint. It starts without a target
+ * and is published by window activation. Readers need only a snapshot. */
+static int *sched_focus_hint(void) {
+  static int focus_pid;
+  return &focus_pid;
+}
 
-/* sched_get_focus_pid - lockless snapshot of the focus hint. */
-int sched_get_focus_pid(void) { return keyboard_focus_pid; }
+void sched_set_focus_pid(int pid) {
+  __atomic_store_n(sched_focus_hint(), pid, __ATOMIC_RELAXED);
+}
+
+int sched_get_focus_pid(void) {
+  return __atomic_load_n(sched_focus_hint(), __ATOMIC_RELAXED);
+}
 
 /* window_request_close - window-close INTENT seam, owned by the process
  * layer (GFX-COMP-03 #69): the compositor calls this instead of
@@ -1438,10 +1434,10 @@ struct process *process_create_caps(const char *name, uint8_t priority,
    * order nothing else in this file establishes. Idle/kernel threads have
    * no environment to inherit, so they skip this. */
   struct env_block *envblk = NULL;
-  if (priority != PROC_PRIO_IDLE)
+  if (priority != PROC_PRIO_IDLE) {
     envblk = (struct env_block *)pmm_alloc_page();
-  /* env allocation is deliberately best-effort: NULL means the process
-   * inherits system defaults, as documented in struct process. */
+    if (envblk == NULL) return NULL;
+  }
 
   /* The descriptor page also comes from PMM, whose zone allocator takes
    * its own lock. Never enter it with sched_lock held and IRQs masked. */
@@ -2037,6 +2033,17 @@ int process_terminate(int pid) {
    * it under sched_lock: that nests scheduler and compositor/allocator locks. */
   extern void compositor_destroy_windows_by_pid(int pid);
   compositor_destroy_windows_by_pid(pid);
+
+  /* On self-exit the process will never execute user code again. Drop its
+   * descriptor capabilities NOW, while still on its own live kernel stack,
+   * before publishing ZOMBIE. PIPE writers must close independently of when
+   * another CPU collects the exit status or reaps the stack; otherwise
+   * a reader waiting for EOF can deadlock against a waiter. The deferred
+   * resource free remains idempotent (NULL handle table) at final reap.
+   * An externally killed, parked task retains deferred cleanup because its
+   * kernel stack may still be active on another CPU. */
+  if (self)
+    process_handles_destroy(victim);
 
   /* victim remains in process_pool: dying blocks duplicate termination and
    * CONT, while an external victim stays STOPPED and cannot reach the reaper. */
@@ -2679,7 +2686,7 @@ hal_frame_t *schedule(hal_frame_t *regs) {
 
   __sched_release_pending_stack(cpu_ptr);
 
-  int focus_pid = keyboard_focus_pid; /* lockless hint read, SCHED-01 */
+  int focus_pid = sched_get_focus_pid(); /* lockless hint read, SCHED-01 */
 
   if (__sched_retire_prev(cpu_ptr, prev, regs) == SCHED_RETIRE_REAPED) {
     prev = NULL;
@@ -2985,6 +2992,20 @@ struct ipc_node *pop_message(struct process *proc, int src_pid) {
   return node;
 }
 
+/* Check the receiver's live relationship under sched_lock. A terminal may
+ * forward keyboard events to its own job. Other clients cannot insert input
+ * into a peer's queue using ordinary IPC authority or a PROCESS handle. */
+static int ipc_input_allowed(const struct process *sender,
+                             const struct process *target, int type) {
+  if (type == IPC_TYPE_MOUSE)
+    return sender != NULL && proc_has_cap(sender, CAP_POINTER_RAW);
+  if (type != IPC_TYPE_INPUT) return 1;
+  if (sender == NULL) return 0;
+  int pid = (int)sender->pid;
+  return proc_has_cap(sender, CAP_KEYBOARD_RAW) ||
+         target->parent_pid == pid || target->owner_pid == pid;
+}
+
 /* kernel_ipc_send - internal IPC implementation.
  *
  * SCHED-05 fix: OS1LIBKERNEL_IPC_QUEUE_MAX now caps a target's pending-message count.
@@ -2997,7 +3018,7 @@ struct ipc_node *pop_message(struct process *proc, int src_pid) {
 int kernel_ipc_send(int target_pid, struct ipc_message *msg) {
   struct ipc_node *node = (struct ipc_node *)kmalloc(sizeof(struct ipc_node));
   if (!node)
-    return -1;
+    return -ENOMEM;
   memcpy(&node->msg, msg, sizeof(struct ipc_message));
 
   uint64_t flags;
@@ -3005,10 +3026,15 @@ int kernel_ipc_send(int target_pid, struct ipc_message *msg) {
   spin_lock_irqsave(&sched_lock, &flags);
 
   struct process *target = __process_find_by_pid(target_pid);
-  if (!target || target->state == PROC_DEAD || target->state == PROC_ZOMBIE) {
+  int status = 0;
+  if (!target || target->state == PROC_DEAD || target->state == PROC_ZOMBIE)
+    status = -ESRCH;
+  else if (!ipc_input_allowed(current_process, target, msg->type))
+    status = -EPERM;
+  if (status != 0) {
     spin_unlock_irqrestore(&sched_lock, flags);
     kfree(node);
-    return -1;
+    return status;
   }
 
   spin_lock(&target->msg_lock);

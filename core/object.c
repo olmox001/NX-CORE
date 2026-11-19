@@ -308,9 +308,16 @@ static void obj_unref(struct kobject *o) {
     kobj_free(to_free);
 }
 
+/* The detached slot keeps its object reference until all wakeups finish.
+ * Another CPU can drop every other reference as soon as object_lock opens. */
+static void endpoint_release(struct kobject *object, uint32_t wake) {
+  if (object == NULL) return;
+  if (wake != ENDPOINT_WAKE_NONE) endpoint_wake(object, wake);
+  obj_unref(object);
+}
+
 static int handle_release_exact(struct process *process, int handle,
                                 struct kobject *expected) {
-  struct kobject *to_free = NULL;
   uint32_t wake = ENDPOINT_WAKE_NONE;
   uint64_t flags;
   int status = 0;
@@ -326,13 +333,9 @@ static int handle_release_exact(struct process *process, int handle,
     wake = endpoint_handle_drop_locked(expected, entry->rights);
     entry->obj = NULL;
     entry->rights = 0U;
-    if (--expected->refcount <= 0)
-      to_free = expected;
   }
   spin_unlock_irqrestore(&object_lock, flags);
-  endpoint_wake(expected, wake);
-  if (to_free != NULL)
-    kobj_free(to_free);
+  if (status == 0) endpoint_release(expected, wake);
   return status;
 }
 
@@ -733,32 +736,81 @@ long sys_handle_create(int ns, const char *upath, uint32_t rights, int type) {
   }
 }
 
-/*
- * sys_handle_dup - OS1low_handle_duplicate(handle, new_rights).
- * A second handle to the SAME object, with rights attenuated to a subset of the
- * source's.  Needs OS1_RIGHT_DUPLICATE on the source.
- */
-long sys_handle_dup(int handle, uint32_t new_rights) {
+/* One capability duplicate backend for the existing attenuated handle API
+ * and POSIX F_DUPFD. The minimum is a bounded table index, never a size hint.
+ * DUPLICATE is explicitly held; no extra object rights can be manufactured. */
+static long object_duplicate_min(int handle, long minimum,
+                                  uint32_t new_rights) {
   struct process *cur = current_process;
+  if (minimum < 0 || minimum >= NPROC_HANDLES) return -EINVAL;
   if (!cur || !cur->handles || handle < 0 || handle >= NPROC_HANDLES)
     return -EBADF;
-  new_rights &= OS1_RIGHT_ALL;
-
   uint64_t flags;
   spin_lock_irqsave(&object_lock, &flags);
   struct handle_entry *src = &cur->handles[handle];
-  if (!src->obj) {
+  if (src->obj == NULL || (src->rights & OS1_RIGHT_DUPLICATE) == 0U) {
+    long error = src->obj == NULL ? -EBADF : -EPERM;
     spin_unlock_irqrestore(&object_lock, flags);
-    return -EBADF;
+    return error;
   }
-  if (!(src->rights & OS1_RIGHT_DUPLICATE)) {
-    spin_unlock_irqrestore(&object_lock, flags);
-    return -EPERM;
+  int selected = -EMFILE;
+  for (int i = (int)minimum; i < NPROC_HANDLES; ++i) {
+    struct handle_entry *dst = &cur->handles[i];
+    if (selected < 0 && dst->obj == NULL) {
+      uint32_t rights = new_rights & src->rights;
+      dst->obj = src->obj;
+      dst->rights = rights;
+      ++src->obj->refcount;
+      endpoint_handle_add_locked(src->obj, rights);
+      selected = i;
+    }
   }
-  uint32_t rights = new_rights & src->rights; /* attenuation only */
-  int h = handle_install_locked(cur, src->obj, rights);
   spin_unlock_irqrestore(&object_lock, flags);
-  return h;
+  return selected;
+}
+
+/* sys_handle_dup remains the attenuable capability primitive. */
+long sys_handle_dup(int handle, uint32_t new_rights) {
+  return object_duplicate_min(handle, 0, new_rights & OS1_RIGHT_ALL);
+}
+
+/* dup2() must replace an existing target in one lock transaction. A libc
+ * return-number shim does not do this and can redirect output to another
+ * capability without changing the target. Source rights stay unchanged.
+ * A dropped PIPE/PORT endpoint is signalled only AFTER object_lock exits. */
+static long object_duplicate_to(int source_fd, long target_arg) {
+  struct process *cur = current_process;
+  if (!cur || !cur->handles || source_fd < 0 ||
+      source_fd >= NPROC_HANDLES || target_arg < 0 ||
+      target_arg >= NPROC_HANDLES) return -EBADF;
+  int target_fd = (int)target_arg;
+  struct kobject *old = NULL;
+  uint32_t wake = ENDPOINT_WAKE_NONE;
+  uint64_t flags;
+  spin_lock_irqsave(&object_lock, &flags);
+  struct handle_entry *src = &cur->handles[source_fd];
+  if (src->obj == NULL ||
+      (source_fd != target_fd &&
+       (src->rights & OS1_RIGHT_DUPLICATE) == 0U)) {
+    long error = src->obj == NULL ? -EBADF : -EPERM;
+    spin_unlock_irqrestore(&object_lock, flags);
+    return error;
+  }
+  if (source_fd != target_fd) {
+    struct handle_entry *dst = &cur->handles[target_fd];
+    old = dst->obj;
+    uint32_t old_rights = dst->rights;
+    dst->obj = src->obj;
+    dst->rights = src->rights;
+    ++src->obj->refcount;
+    endpoint_handle_add_locked(src->obj, src->rights);
+    if (old != NULL) {
+      wake = endpoint_handle_drop_locked(old, old_rights);
+    }
+  }
+  spin_unlock_irqrestore(&object_lock, flags);
+  endpoint_release(old, wake);
+  return target_fd;
 }
 
 /*
@@ -770,7 +822,6 @@ long sys_handle_close(int handle) {
   if (!cur || !cur->handles || handle < 0 || handle >= NPROC_HANDLES)
     return -EBADF;
 
-  struct kobject *to_free = NULL;
   uint64_t flags;
   spin_lock_irqsave(&object_lock, &flags);
   struct handle_entry *e = &cur->handles[handle];
@@ -782,12 +833,8 @@ long sys_handle_close(int handle) {
   uint32_t wake = endpoint_handle_drop_locked(o, e->rights);
   e->obj = NULL;
   e->rights = 0;
-  if (--o->refcount <= 0)
-    to_free = o;
   spin_unlock_irqrestore(&object_lock, flags);
-  endpoint_wake(o, wake);
-  if (to_free)
-    kobj_free(to_free);
+  endpoint_release(o, wake);
   return 0;
 }
 
@@ -1020,10 +1067,8 @@ long sys_port_send_caps(int handle, const void *umsg, const int *ufds,
     } else {
       int installed[4];
       int n_ok = 0;
-      struct kobject *to_free = NULL;
       struct kobject *wake_objects[4] = {NULL, NULL, NULL, NULL};
       uint32_t wake_flags[4] = {0U, 0U, 0U, 0U};
-      int wake_count = 0;
       ret = 0;
       spin_lock(&object_lock); /* nested under sched_lock; IRQs already off */
       for (int i = 0; i < nfds; i++) {
@@ -1089,30 +1134,21 @@ long sys_port_send_caps(int handle, const void *umsg, const int *ufds,
          * kfree()s, and we hold sched_lock, which would create the
          * sched_lock -> kmalloc_lock order process.c says nothing establishes
          * (the same order that deadlocked dispatch_spawn against an idle core).
-         * A last reference is handed to `to_free` and released after both locks
-         * are dropped; at most one object can reach zero per unwind, because
-         * each installed slot holds exactly one reference. */
-        for (int i = 0; i < n_ok; i++) {
+         * Each removed slot owns one reference through its wakeup. */
+        for (int i = 0; i < 4 && i < n_ok; i++) {
           struct handle_entry *e = &rcv->handles[installed[i]];
           struct kobject *dropped = e->obj;
           uint32_t wake = endpoint_handle_drop_locked(dropped, e->rights);
-          if (wake != 0U && wake_count < 4) {
-            wake_objects[wake_count] = dropped;
-            wake_flags[wake_count] = wake;
-            ++wake_count;
-          }
-          if (--dropped->refcount <= 0)
-            to_free = dropped;
+          wake_objects[i] = dropped;
+          wake_flags[i] = wake;
           e->obj = NULL;
           e->rights = 0;
         }
       }
       spin_unlock(&object_lock);
       spin_unlock_irqrestore(&sched_lock, sflags);
-      for (int i = 0; i < wake_count; ++i)
-        endpoint_wake(wake_objects[i], wake_flags[i]);
-      if (to_free)
-        kobj_free(to_free); /* frees (kfree) — never under sched_lock */
+      for (int i = 0; i < 4; ++i)
+        endpoint_release(wake_objects[i], wake_flags[i]);
       if (ret > 0)
         wake_up(&kp->rq); /* outside both locks: wake_up touches runqueues */
     }
@@ -1486,7 +1522,7 @@ long sys_object_write(int handle, const void *ubuf, size_t n) {
         ret = -EFAULT;
       } else {
         m.from = current_process ? (int)current_process->pid : 0;
-        ret = (kernel_ipc_send(o->pid, &m) == 0) ? 0 : -ESRCH;
+        ret = kernel_ipc_send(o->pid, &m);
       }
     }
   } else if (o->type == OBJ_TYPE_REGKEY) {
@@ -1663,7 +1699,41 @@ long sys_object_wait(int handle, long arg) {
  * holder kill a process it could not reach by process_kill_allowed (seL4
  * delegation of the kill right; acquisition was gated at handle_create time).
  */
+/* Read-only PIPE readiness, as a capability operation. Counts are captured
+ * under object_lock, not fabricated in libc; no allocation or blocking. */
+static long object_pipe_status(int handle, long arg) {
+  if (arg == 0) return -EFAULT;
+  struct os1_pipe_status_v1 status = {0};
+  if (hal_copy_from_user(&status, (const void *)(uintptr_t)arg,
+                         sizeof(status)) != 0) return -EFAULT;
+  if (status.abi_version != OS1_PIPE_STATUS_VERSION ||
+      status.struct_size != sizeof(status)) return -EINVAL;
+  long error = 0;
+  struct kobject *object = pin_handle(handle, 0U, &error);
+  if (object == NULL) return error;
+  if (object->type != OBJ_TYPE_PIPE || object->pipe == NULL) {
+    obj_unref(object);
+    return -EINVAL;
+  }
+  uint64_t flags;
+  spin_lock_irqsave(&object_lock, &flags);
+  status.available = object->pipe->count;
+  status.capacity = PIPE_BUF_SIZE;
+  status.readers = (unsigned int)object->pipe->readers;
+  status.writers = (unsigned int)object->pipe->writers;
+  spin_unlock_irqrestore(&object_lock, flags);
+  obj_unref(object);
+  return hal_copy_to_user((void *)(uintptr_t)arg, &status,
+                          sizeof(status)) != 0 ? -EFAULT : 0;
+}
+
 long sys_object_ctl(int handle, int cmd, long arg) {
+  if (cmd == OBJ_CTL_DUP_MIN)
+    return object_duplicate_min(handle, arg, OS1_RIGHT_ALL);
+  if (cmd == OBJ_CTL_DUP_TO)
+    return object_duplicate_to(handle, arg);
+  if (cmd == OBJ_CTL_PIPE_STATUS)
+    return object_pipe_status(handle, arg);
   if (cmd == OBJ_CTL_SPAWN_OWNED) {
     long error = 0;
     struct kobject *owner = pin_handle(handle, OS1_RIGHT_DESTROY, &error);
@@ -2018,82 +2088,56 @@ int process_install_stdio(struct process *p, struct process *parent) {
   /* Slots 0/1/2 of a just-allocated table are free; install the shared console
    * directly (not via the find-free path, which is for handles >= 3). */
   p->handles[0].obj = con;
-  p->handles[0].rights = OS1_RIGHT_READ;
+  p->handles[0].rights = OS1_RIGHT_READ | OS1_RIGHT_DUPLICATE;
   p->handles[1].obj = con;
-  p->handles[1].rights = OS1_RIGHT_WRITE;
+  p->handles[1].rights = OS1_RIGHT_WRITE | OS1_RIGHT_DUPLICATE;
   p->handles[2].obj = con;
-  p->handles[2].rights = OS1_RIGHT_WRITE;
+  p->handles[2].rights = OS1_RIGHT_WRITE | OS1_RIGHT_DUPLICATE;
   con->refcount = 3; /* three handles reference it */
   spin_unlock_irqrestore(&object_lock, flags);
   return 0;
 }
 
-/*
- * process_redirect_child_fd - install the SPAWNER's open handle 'parent_fd'
- * into the freshly-created child's slot 'child_slot', OVERWRITING the
- * pre-installed console there (Phase 4 shell redirection: `<`/`>`/`>>`/`2>`).
- * This is the fork+dup2 primitive expressed as a capability dup — the child
- * gets a SECOND handle to the SAME kobject (shared FILE offset, ASTRA §6.2), so
- * its read(0)/write(1) flow to the file instead of the terminal.  Called from
- * dispatch_spawn BEFORE the child is enqueued, with the spawner as
- * current_process; the spawner closes its own copies after the spawn returns.
- * Returns 0, or -EINVAL/-EBADF/-ENOMEM.
- */
-int process_redirect_child_fd_from(struct process *owner, struct process *child,
+/* Child construction has installed stdio and holds the child alive. Pin
+ * the source process under sched_lock and both tables under object_lock.
+ * The displaced reference survives until the wake outside both locks. */
+int process_redirect_child_fd_from(int owner_pid, struct process *child,
                                    int child_slot, int parent_fd) {
-  struct process *parent =
-      owner; /* the fd's owner; not necessarily the spawner */
-  if (!child || !parent)
-    return -EINVAL;
+  if (!child || owner_pid <= 0) return -EINVAL;
   if (child_slot < 0 || child_slot >= NPROC_HANDLES || parent_fd < 0 ||
-      parent_fd >= NPROC_HANDLES)
-    return -EBADF;
-  if (!parent->handles)
-    return -EBADF;
-  if (handles_ensure(child) != 0) /* normally already done by install_stdio */
-    return -ENOMEM;
-
-  struct kobject *to_free = NULL;
+      parent_fd >= NPROC_HANDLES) return -EBADF;
+  struct kobject *old = NULL;
   uint32_t wake = ENDPOINT_WAKE_NONE;
   uint64_t flags;
-  spin_lock_irqsave(&object_lock, &flags);
-  struct handle_entry *src = &parent->handles[parent_fd];
-  if (!src->obj) {
-    spin_unlock_irqrestore(&object_lock, flags);
-    return -EBADF;
+  int result = -ESRCH;
+  spin_lock_irqsave(&sched_lock, &flags);
+  struct process *source = __process_find_by_pid(owner_pid);
+  if (source != NULL) {
+    spin_lock(&object_lock);
+    result = -EBADF;
+    if (source->handles && child->handles && source->handles[parent_fd].obj) {
+      struct handle_entry entry = source->handles[parent_fd];
+      struct handle_entry *dst = &child->handles[child_slot];
+      old = dst->obj;
+      uint32_t old_rights = dst->rights;
+      entry.obj->refcount++;
+      endpoint_handle_add_locked(entry.obj, entry.rights);
+      *dst = entry;
+      if (old) wake = endpoint_handle_drop_locked(old, old_rights);
+      result = 0;
+    }
+    spin_unlock(&object_lock);
   }
-  /* Drop whatever the child already held there (its shared console handle) and
-   * point the slot at the spawner's object with the SAME rights. */
-  struct handle_entry *dst = &child->handles[child_slot];
-  struct kobject *old = dst->obj;
-  uint32_t old_rights = dst->rights;
-  dst->obj = src->obj;
-  dst->rights = src->rights;
-  src->obj->refcount++;
-  endpoint_handle_add_locked(src->obj, src->rights);
-  if (old) {
-    wake = endpoint_handle_drop_locked(old, old_rights);
-    if (--old->refcount <= 0)
-      to_free = old;
-  }
-  spin_unlock_irqrestore(&object_lock, flags);
-  if (old != NULL)
-    endpoint_wake(old, wake);
-  if (to_free)
-    kobj_free(to_free);
-  return 0;
+  spin_unlock_irqrestore(&sched_lock, flags);
+  endpoint_release(old, wake);
+  return result;
 }
 
-/* process_redirect_child_fd - the spawner-is-the-source form (today's callers:
- * the SYS_SPAWN redirection list, where the fds belong to the process calling
- * spawn).  Kept as a thin wrapper so the source stays parameterised: an
- * execution SERVICE spawning on a client's behalf needs the source to be the
- * CLIENT, not itself (Q2 hybrid).  Splitting the source out now means that path
- * is a caller change rather than a rewrite. */
 int process_redirect_child_fd(struct process *child, int child_slot,
                               int parent_fd) {
-  return process_redirect_child_fd_from(current_process, child, child_slot,
-                                        parent_fd);
+  if (!current_process) return -EINVAL;
+  return process_redirect_child_fd_from((int)current_process->pid, child,
+                                        child_slot, parent_fd);
 }
 
 /*
@@ -2102,11 +2146,7 @@ int process_redirect_child_fd(struct process *child, int child_slot,
  * deferred reaper) before the struct process page is freed.  NULL-safe.
  */
 void process_handles_destroy(struct process *p) {
-  struct kobject *retired[NPROC_HANDLES];
-  struct kobject *wake_objects[NPROC_HANDLES];
-  uint32_t wake_flags[NPROC_HANDLES];
-  unsigned retired_count = 0U;
-  unsigned wake_count = 0U;
+  uint32_t wake_flags[NPROC_HANDLES] = {0};
   uint64_t flags;
   if (p == NULL)
     return;
@@ -2121,20 +2161,10 @@ void process_handles_destroy(struct process *p) {
     struct kobject *object = tbl[i].obj;
     if (object == NULL)
       continue;
-    uint32_t wake = endpoint_handle_drop_locked(object, tbl[i].rights);
-    if (wake != 0U) {
-      wake_objects[wake_count] = object;
-      wake_flags[wake_count] = wake;
-      ++wake_count;
-    }
-    tbl[i].obj = NULL;
-    if (--object->refcount <= 0)
-      retired[retired_count++] = object;
+    wake_flags[i] = endpoint_handle_drop_locked(object, tbl[i].rights);
   }
   spin_unlock_irqrestore(&object_lock, flags);
-  for (unsigned i = 0U; i < wake_count; ++i)
-    endpoint_wake(wake_objects[i], wake_flags[i]);
-  for (unsigned i = 0U; i < retired_count; ++i)
-    kobj_free(retired[i]);
+  for (int i = 0; i < NPROC_HANDLES; ++i)
+    endpoint_release(tbl[i].obj, wake_flags[i]);
   kfree(tbl);
 }

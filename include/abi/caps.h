@@ -29,6 +29,11 @@
 #define CAP_REG_WRITE (1u << 4) /* SYS_REGISTRY write op               */
 /* Explicitly delegated window-manager authority; not a default ROOT right. */
 #define CAP_WINDOW_MANAGE (1u << 5) /* move/resize other owners' windows */
+/* Only supervised input routers acquire RAW device queues. Application
+ * keyboard/mouse events are delivered by the existing focused IPC/TTY
+ * path: no per-app declaration or device capability is required. */
+#define CAP_KEYBOARD_RAW (1u << 6)
+#define CAP_POINTER_RAW (1u << 7)
 #define CAP_ALL                                                                \
   (CAP_SPAWN | CAP_FS_WRITE | CAP_IPC_ANY | CAP_WINDOW | CAP_REG_WRITE)
 
@@ -63,7 +68,7 @@ static inline unsigned int caps_for_level(int level) {
   switch (level) {
   case PLVL_MACHINE:
   case PLVL_ROOT:
-    return CAP_ALL | CAP_WINDOW_MANAGE;
+    return CAP_ALL | CAP_WINDOW_MANAGE | CAP_KEYBOARD_RAW | CAP_POINTER_RAW;
   case PLVL_USER:
     return CAP_ALL;
   case PLVL_GUEST:
@@ -76,7 +81,7 @@ static inline unsigned int caps_for_level(int level) {
 /* Ordinary launches do not inherit optional service-manager capabilities.
  * caps_for_level is the maximum grantable mask; this is the default mask. */
 static inline unsigned int caps_default_for_level(int level) {
-  return caps_for_level(level) & ~CAP_WINDOW_MANAGE;
+  return caps_for_level(level) & ~(CAP_WINDOW_MANAGE | CAP_KEYBOARD_RAW | CAP_POINTER_RAW);
 }
 
 /* Spawn-mode flags (arg3 of SYS_SPAWN / SYS_SPAWN_CAPS) — the nxexec model
@@ -89,7 +94,8 @@ static inline unsigned int caps_default_for_level(int level) {
 /* Every bit outside SPAWN_FLAGS_ALL is REJECTED kernel-side with -EINVAL
  * (fail closed): the spawn surface is the front door of process execution
  * and must never silently accept unknown semantics (#193 hardening). */
-#define SPAWN_FLAGS_ALL SPAWN_FLAG_DETACHED
+#define SPAWN_FLAG_USER (1u << 1) /* cap this child at ordinary user level */
+#define SPAWN_FLAGS_ALL (SPAWN_FLAG_DETACHED | SPAWN_FLAG_USER)
 
 /*
  * fd redirection on spawn (Phase 4, shell `<`/`>`/`>>`/`2>`).  The PARENT opens

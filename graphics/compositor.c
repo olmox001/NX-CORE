@@ -456,10 +456,15 @@ void compositor_full_damage(void) {
 /* Report the current desktop (compositor backbuffer) size.  Backs
  * SYS_DISPLAY_INFO. */
 void compositor_get_size(int *w, int *h) {
+  /* Scanout and workspace may change concurrently on different CPUs.
+   * Expose one atomic logical extent, never a torn w/h pair. */
+  uint64_t flags;
+  spin_lock_irqsave(&compositor_lock, &flags);
   if (w)
     *w = bb_width;
   if (h)
     *h = bb_height;
+  spin_unlock_irqrestore(&compositor_lock, flags);
 }
 
 /* Edge reservations are declared by generic, capability-owned surface
@@ -911,11 +916,8 @@ int compositor_create_window(int x, int y, int w, int h, const char *title,
 /*
  * __focus_topmost_locked - re-point keyboard focus after a window goes away.
  *
- * Picks the top-most remaining visible window (highest z_order) and gives it
- * keyboard focus; falls back to the shell default (PID 7) when no window is
- * left.  Replaces the old hardcoded 'keyboard_focus_pid = 7' reset, which
- * sent input to a stale/wrong PID whenever the shell was not PID 7 (PID
- * numbering depends on boot service order) and ignored Z-order entirely.
+ * The highest visible, focusable window receives input. An empty desktop
+ * has no keyboard destination.
  *
  * Caller MUST hold compositor_lock; destroyed slots are already zeroed and
  * thus excluded by the id != 0 check.
@@ -926,9 +928,9 @@ static void __clear_other_carets_locked(int keep_pid);
 
 static void __focus_topmost_locked(void) {
   int max_z = -1;
-  int pid = 7; /* shell default when no window remains */
+  int pid = 0;
   for (int i = 0; i < MAX_WINDOWS; i++) {
-    if (windows[i].id != 0 && windows[i].visible &&
+    if (windows[i].id != 0 && windows[i].visible && !windows[i].passive &&
         windows[i].z_order > max_z) {
       max_z = windows[i].z_order;
       pid = windows[i].pid;
@@ -991,7 +993,7 @@ int compositor_minimize_window(int window_id) {
     if (windows[i].id == window_id) {
       windows[i].visible = 0;
       windows[i].minimized = 1;
-      if (keyboard_focus_pid == windows[i].pid)
+      if (sched_get_focus_pid() == windows[i].pid)
         __focus_topmost_locked(); /* re-point focus off the hidden window */
       expand_damage(0, 0, bb_width, bb_height);
       compositor_dirty = 1;
@@ -1003,59 +1005,41 @@ int compositor_minimize_window(int window_id) {
   return ret;
 }
 
-/* compositor_restore_window - bring a backgrounded window back: show it, raise
- * it to the front and give it keyboard focus.  Returns 0, or -ESRCH for unknown
- * id. The focus push (sched_set_focus_pid + compositor_focus_changed) runs
- * AFTER the unlock, matching SYS_SET_FOCUS and keeping compositor_lock off the
- * focus path. */
-int compositor_restore_window(int window_id) {
+/* Visibility, stacking and the focus hint belong to the same window
+ * transition. A passive surface may be restored without taking input. */
+static int activate_window(int id, int restoring) {
+  if (id <= 0) return -ESRCH;
   uint64_t flags;
-  int target_pid = -1;
+  int result = -ESRCH;
   spin_lock_irqsave(&compositor_lock, &flags);
-  for (int i = 0; i < MAX_WINDOWS; i++) {
-    if (windows[i].id == window_id) {
-      windows[i].visible = 1;
-      windows[i].minimized = 0;
-      __raise_to_front_locked(&windows[i]);
-      target_pid = windows[i].pid;
+  for (int i = 0; i < MAX_WINDOWS && result == -ESRCH; ++i) {
+    struct window *win = &windows[i];
+    if (win->id != id) continue;
+    if (win->passive && !restoring) {
+      result = -EPERM;
+    } else {
+      win->visible = 1;
+      win->minimized = 0;
+      __raise_to_front_locked(win);
+      if (!win->passive) {
+        sched_set_focus_pid(win->pid);
+        __clear_other_carets_locked(win->pid);
+      }
       expand_damage(0, 0, bb_width, bb_height);
       compositor_dirty = 1;
-      break;
+      result = 0;
     }
   }
   spin_unlock_irqrestore(&compositor_lock, flags);
-  if (target_pid < 0)
-    return -ESRCH;
-  sched_set_focus_pid(target_pid);
-  compositor_focus_changed(target_pid);
-  return 0;
+  return result;
 }
 
-/* compositor_focus_window - raise a window and give it keyboard focus; reveals
- * it if it was hidden/minimized.  Returns 0, or -ESRCH for an unknown id. */
+int compositor_restore_window(int window_id) {
+  return activate_window(window_id, 1);
+}
+
 int compositor_focus_window(int window_id) {
-  uint64_t flags;
-  int target_pid = -1;
-  spin_lock_irqsave(&compositor_lock, &flags);
-  for (int i = 0; i < MAX_WINDOWS; i++) {
-    if (windows[i].id == window_id) {
-      if (!windows[i].visible) {
-        windows[i].visible = 1;
-        windows[i].minimized = 0;
-      }
-      __raise_to_front_locked(&windows[i]);
-      target_pid = windows[i].pid;
-      expand_damage(0, 0, bb_width, bb_height);
-      compositor_dirty = 1;
-      break;
-    }
-  }
-  spin_unlock_irqrestore(&compositor_lock, flags);
-  if (target_pid < 0)
-    return -ESRCH;
-  sched_set_focus_pid(target_pid);
-  compositor_focus_changed(target_pid);
-  return 0;
+  return activate_window(window_id, 0);
 }
 
 /* __fill_window_info_locked - serialise one window slot into the shared ABI
@@ -1079,7 +1063,7 @@ static void __fill_window_info_locked(const struct window *w,
     f |= WININFO_PASSIVE;
   if (w->protected)
     f |= WININFO_PROTECTED;
-  if (w->pid == keyboard_focus_pid)
+  if (w->pid == sched_get_focus_pid())
     f |= WININFO_FOCUSED;
   wi->flags = f;
   int k = 0;
@@ -1190,7 +1174,7 @@ long compositor_window_snapshot(struct os1_window_snapshot_v1 *user_snapshot) {
       result.flags |= WININFO_PASSIVE;
     if (win->protected)
       result.flags |= WININFO_PROTECTED;
-    if (win->pid == keyboard_focus_pid)
+    if (win->pid == sched_get_focus_pid())
       result.flags |= WININFO_FOCUSED;
     memcpy(result.title, win->title, sizeof(result.title));
     result.title[sizeof(result.title) - 1] = '\0';
@@ -1309,7 +1293,7 @@ void compositor_destroy_window(int window_id) {
     if (windows[i].id != window_id)
       continue;
 
-    int refocus = (windows[i].pid == keyboard_focus_pid);
+    int refocus = (windows[i].pid == sched_get_focus_pid());
     int ddw = windows[i].draw_w > 0 ? windows[i].draw_w : windows[i].width;
     int ddh = windows[i].draw_h > 0 ? windows[i].draw_h : windows[i].height;
     expand_damage(windows[i].x, windows[i].y - compositor_titlebar_height(),
@@ -1348,7 +1332,7 @@ void compositor_destroy_windows_by_pid(int pid) {
     if (windows[i].id == 0 || windows[i].pid != pid)
       continue;
 
-    if (windows[i].pid == keyboard_focus_pid)
+    if (windows[i].pid == sched_get_focus_pid())
       refocus = 1;
     int ddw = windows[i].draw_w > 0 ? windows[i].draw_w : windows[i].width;
     int ddh = windows[i].draw_h > 0 ? windows[i].draw_h : windows[i].height;
@@ -1432,7 +1416,7 @@ int compositor_get_window_by_pid(int pid) {
 
 /* compositor_get_focus_pid() removed (DIR-02 / SCHED-01 #83): it was dead after
  * the scheduler→compositor inversion.  Focus is now read from the scheduler's
- * published keyboard_focus_pid hint, never queried back from the compositor. */
+ * published sched_get_focus_pid() hint, never queried back from the compositor. */
 
 /*
  * compositor_move_window - reposition a window programmatically (not via the
@@ -1656,15 +1640,6 @@ static void __clear_other_carets_locked(int keep_pid) {
   }
 }
 
-/* compositor_focus_changed - public hook for SYS_SET_FOCUS: wipe the caret off
- * windows that just lost keyboard focus. */
-void compositor_focus_changed(int new_pid) {
-  uint64_t flags;
-  spin_lock_irqsave(&compositor_lock, &flags);
-  __clear_other_carets_locked(new_pid);
-  spin_unlock_irqrestore(&compositor_lock, flags);
-}
-
 /*
  * Write text to a window's terminal emulator.  Thin compositor seam over the
  * extracted VT engine (term.c, #123): look up the window, hand the terminal the
@@ -1700,7 +1675,7 @@ void compositor_window_write(int win_id, const char *buf, size_t count) {
 
   /* The caret is drawn only on the window that currently owns keyboard input.
    */
-  win->term.focused = (win->pid == keyboard_focus_pid);
+  win->term.focused = (win->pid == sched_get_focus_pid());
   term_write(&win->term, &win_surf, buf, count);
 
   /* Mark compositor as needing redraw (window area including title bar) */
@@ -1968,6 +1943,9 @@ void compositor_set_window_flags(int window_id, int flags_val) {
         windows[i].visible = 0; /* bit 2: hide window */
       else if (flags_val & 2)
         windows[i].visible = 1; /* bit 1: show window */
+      if ((!windows[i].visible || windows[i].passive) &&
+          windows[i].pid == sched_get_focus_pid())
+        __focus_topmost_locked();
       /* Damage the window's footprint so the show/hide/restack is actually
        * composited + flushed on the next render.  Without this the state
        * changed but the damage box stayed empty, so the popup only refreshed

@@ -115,10 +115,8 @@ static int nxm_unpack(const struct ipc_message *message,
 static int nxm_spawn(const struct nxm_slot *slot) {
   if (!slot->auth_set)
     return -EPERM;
-  if (slot->args[0] == '\0')
-    return (int)spawn_caps(slot->executable, PLVL_ROOT, slot->caps);
-  if (slot->caps != CAP_ALL)
-    return -EINVAL; /* argumentful capability-spawn needs an argv-aware API */
+  /* One capability-backed path for every managed service, with or without
+   * arguments. Never widen its mask via the legacy ambient spawn calls. */
   char args[sizeof(slot->args)];
   for (unsigned i = 0U; i < sizeof(args); ++i)
     args[i] = slot->args[i];
@@ -138,7 +136,30 @@ static int nxm_spawn(const struct nxm_slot *slot) {
     if (ch == '\0')
       break;
   }
-  return spawn_args(slot->executable, (int)argc, argv);
+  char principal[16] = {0};
+  int bytes = snprintf(principal, sizeof(principal), "%d", get_pid());
+  if (bytes <= 0 || bytes >= (int)sizeof(principal))
+    return -EINVAL;
+  long owner = OS1low_handle_create(OS1_NS_PROC, principal,
+                                   OS1_RIGHT_DESTROY, OBJ_TYPE_PROCESS);
+  if (owner < 0)
+    return (int)owner;
+  struct os1_spawn_request_v2 request = {
+      .base = {
+          .abi_version = OS1_SPAWN_REQUEST_AUTH_VERSION,
+          .struct_size = sizeof(request),
+          .argc = argc,
+          .path = (uint64_t)(uintptr_t)slot->executable,
+          .argv = (uint64_t)(uintptr_t)argv
+      },
+      .level = PLVL_ROOT, .caps = slot->caps
+  };
+  long pid = OS1_object_ctl((int)owner, OBJ_CTL_SPAWN_OWNED,
+                            (long)(uintptr_t)&request);
+  long closed = OS1low_handle_close((int)owner);
+  if (closed != 0)
+    OS1_report_error("nxmanage.owner_handle_close", (int)closed);
+  return (int)pid;
 }
 
 /* One stable registry object per canonical service name; a reader cannot
@@ -252,8 +273,9 @@ static int nxm_auth(struct nxm_state *state,
   struct nxm_slot *slot = &state->slots[id];
   if (!slot->named || slot->active) return -EPERM;
   uint64_t requested = message->data2;
-  if (requested != CAP_ALL &&
-      requested != (CAP_ALL | CAP_WINDOW_MANAGE)) return -EPERM;
+  if ((requested & ~(uint64_t)(CAP_ALL | CAP_WINDOW_MANAGE |
+                                   CAP_KEYBOARD_RAW | CAP_POINTER_RAW)) != 0U)
+    return -EPERM;
   if (slot->auth_set && slot->caps != (uint32_t)requested) return -EPERM;
   slot->caps = (uint32_t)requested;
   slot->auth_set = 1U;
