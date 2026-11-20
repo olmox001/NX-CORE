@@ -209,7 +209,7 @@ struct process {
 
   /* IPC state */
   int ipc_target_pid; /* PID we want to talk to (-1 for ANY) */
-  bool ipc_waiting; /* only legacy receive may be woken by legacy IPC send */
+  bool ipc_waiting; /* message receive and object-backed stdin wait */
   struct ipc_message
       *ipc_msg; /* User-space pointer to message (for synchronous RECV) */
   struct list_head msg_queue; /* Buffered incoming messages */
@@ -447,6 +447,10 @@ int sys_ipc_send(int target_pid, void *msg_ptr) NX_MUST_USE;
 #define IPC_RECV_RETRY 1
 int sys_ipc_recv(int src_pid, void *msg_ptr) NX_MUST_USE;
 int sys_ipc_try_recv(int src_pid, void *msg_ptr) NX_MUST_USE;
+/* Atomically arm an empty per-process IPC mailbox for a syscall retry.
+ * Returns 1 after sleeping, 0 if a message arrived before arming, <0 on
+ * invalid state. This is internal scheduler API, not a new syscall. */
+int process_arm_ipc_read(void) NX_MUST_USE;
 int kernel_ipc_send(int target_pid, struct ipc_message *msg) NX_MUST_USE;
 struct ipc_node *pop_message(struct process *proc, int src_pid);
 /* Scheduler-owned snapshot of the active window owner. */

@@ -1280,6 +1280,37 @@ static long object_read_window(const struct kobject *object, void *user_buffer,
   return (long)copy_size;
 }
 
+/* Split the already-authorized CONSOLE input payload without discarding
+ * UTF-8 continuation bytes. The same IPC node stores the unread suffix;
+ * no extra allocation, new syscall or competing input reader is involved.
+ */
+static long object_read_console_payload(struct ipc_node *node,
+                                        void *user_buffer, size_t size,
+                                        int *retained) {
+  size_t length = 0U;
+  for (size_t i = 0U; i < sizeof(node->msg.payload) &&
+                      node->msg.payload[i] != '\0'; ++i)
+    length++;
+  size_t copied = size < length ? size : length;
+  if (copied == 0U) return -EAGAIN;
+  if (hal_copy_to_user(user_buffer, node->msg.payload, copied) != 0)
+    return -EFAULT;
+  if (copied == length) return (long)copied;
+  /* Reclaim the already-owned node after the caller decides whether to
+   * retain it. A bounded left shift avoids overlapping-copy ambiguity. */
+  for (size_t i = 0U; i < sizeof(node->msg.payload) &&
+                       i < length - copied; ++i)
+    node->msg.payload[i] = node->msg.payload[i + copied];
+  node->msg.payload[length - copied] = '\0';
+  uint64_t flags;
+  spin_lock_irqsave(&current_process->msg_lock, &flags);
+  list_add(&node->list, &current_process->msg_queue);
+  current_process->msg_count++;
+  spin_unlock_irqrestore(&current_process->msg_lock, flags);
+  *retained = 1;
+  return (long)copied;
+}
+
 static long object_read_console(void *user_buffer, size_t size) {
   if (size == 0U)
     return 0;
@@ -1290,14 +1321,18 @@ static long object_read_console(void *user_buffer, size_t size) {
     struct ipc_node *node = pop_message(current_process, -1);
     if (node == NULL)
       return -EAGAIN;
-    if (node->msg.type == IPC_TYPE_INPUT && node->msg.data2 != 0U) {
-      char character = (char)node->msg.data1;
-      long result = hal_copy_to_user(user_buffer, &character, 1U) != 0
-          ? -EFAULT : 1;
-      kfree(node);
-      return result;
+    int retained = 0;
+    long read_result = -EAGAIN;
+    if (node->msg.type == IPC_TYPE_INPUT && node->msg.data2 != 0U &&
+        node->msg.payload[0] != '\0') {
+      /* Hardware scancodes stay in data1. POSIX stdin consumes the complete
+       * translated UTF-8 payload, possibly across several small reads. */
+      read_result = object_read_console_payload(
+          node, user_buffer, size, &retained);
     }
+    if (retained) return read_result;
     kfree(node);
+    if (read_result != -EAGAIN) return read_result;
   }
   return -EAGAIN;
 }

@@ -565,21 +565,19 @@ hal_frame_t *kernel_syscall_dispatcher(hal_frame_t *frame) {
                        sys_object_lseek((int)arg0, (long)arg1, (int)arg2));
     break;
   case SYS_READ: {
-    /* read(fd, buf, n) ≡ OS1_object_read on the handle.  A CONSOLE stdin with
-     * no key pending returns -EAGAIN; that is NOT surfaced to userland — we
-     * block the caller exactly like the folded-in FD_KBD path (PROC_SLEEPING,
-     * wake on ANY message i.e. a keystroke, retry the syscall on wake;
-     * rescheduling needs the trap frame, which is why this stays in the
-     * dispatcher).  -EPERM (read of a write-only handle, e.g. stdout) maps to
-     * the POSIX -EBADF. */
+    /* Object-backed POSIX stdin waits using the scheduler's atomic mailbox
+     * arm. No new syscall, capability, or keyboard reader is involved.
+     * Retry the original trap whether the message raced the arm or arrived
+     * after the task slept. Never overwrite argument/return registers first.
+     */
     long r = sys_object_read((int)arg0, (void *)arg1, (size_t)arg2);
     if (r == -EAGAIN && current_process) {
-      hal_irq_disable();
-      current_process->ipc_target_pid = -1; /* wake on ANY message */
-      current_process->state = PROC_SLEEPING;
-      hal_irq_enable();
-      hal_frame_retry_syscall(frame);
-      return schedule(frame);
+      int armed = process_arm_ipc_read();
+      if (armed >= 0) {
+        hal_frame_retry_syscall(frame);
+        return schedule(frame);
+      }
+      r = armed;
     }
     hal_frame_set_return(frame, (r == -EPERM) ? -EBADF : r);
   } break;

@@ -3085,6 +3085,47 @@ int sys_ipc_send(int target_pid, void *msg_ptr) {
   return kernel_ipc_send(target_pid, &k_msg);
 }
 
+/* Make an object-backed stdin read sleep on its OWN process mailbox.
+ * The sender holds sched_lock when it queues and wakes, so the queue-empty
+ * observation and the sleep commitment must share that lock. Merely setting
+ * PROC_SLEEPING (as the old SYS_READ dispatcher did) misses the ipc_waiting
+ * wake predicate and loses every later key. This helper is OS-agnostic: it
+ * knows neither terminals nor keyboard devices nor terminal ownership.
+ *
+ * Return 0 when an event won the race; the caller retries the original read
+ * without sleeping. Return 1 only after state and wake flags were committed.
+ */
+int process_arm_ipc_read(void) {
+  struct process *self = current_process;
+  if (self == NULL) return -ESRCH;
+
+  uint64_t flags;
+  spin_lock_irqsave(&sched_lock, &flags);
+  struct cpu_info *cpu = get_cpu_info();
+  if (cpu == NULL || cpu->current_task != self ||
+      self->state == PROC_STOPPED || self->state == PROC_DEAD ||
+      self->state == PROC_ZOMBIE) {
+    spin_unlock_irqrestore(&sched_lock, flags);
+    return -ESRCH;
+  }
+
+  spin_lock(&self->msg_lock);
+  int queued = self->msg_count != 0U;
+  spin_unlock(&self->msg_lock);
+  if (queued) {
+    spin_unlock_irqrestore(&sched_lock, flags);
+    return 0;
+  }
+
+  spin_lock(&cpu->sched_lock);
+  self->ipc_target_pid = -1;
+  self->ipc_waiting = true;
+  self->state = PROC_SLEEPING;
+  spin_unlock(&cpu->sched_lock);
+  spin_unlock_irqrestore(&sched_lock, flags);
+  return 1;
+}
+
 int sys_ipc_recv(int src_pid, void *msg_ptr) {
   struct process *self = current_process;
   if (!self)
