@@ -2,3 +2,7 @@
 	path = external/grub
 	url = https://github.com/olmox001/grub.git
 	branch = nexsos-port
+[submodule "external/linux"]
+	path = external/linux
+	url = https://github.com/olmox001/Nx-linux.git
+	branch = DEV-OS1-kernel
