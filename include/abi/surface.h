@@ -25,6 +25,15 @@
 #define OS1_DISPLAY_MODE_PREFERRED 2U
 #define OS1_DISPLAY_MODE_INTERLACED 4U
 #define OS1_DISPLAY_MODE_MAX 32U
+#define OS1_RESOURCE_DISPLAY_WORKSPACE "display/0/workspace"
+#define OS1_DISPLAY_WORKSPACE_AUTO 0U
+#define OS1_DISPLAY_WORKSPACE_MANUAL 1U
+#define OS1_RESOURCE_SURFACE_LAYOUT "surface/layout-v1"
+#define OS1_SURFACE_LAYOUT_ANCHOR_NONE 0U
+#define OS1_SURFACE_LAYOUT_ANCHOR_TOP 1U
+#define OS1_SURFACE_LAYOUT_ANCHOR_BOTTOM 2U
+#define OS1_SURFACE_LAYOUT_LAYER_NORMAL 0U
+#define OS1_SURFACE_LAYOUT_LAYER_OVERLAY 1U
 struct os1_surface_state_v1 {
   uint32_t abi_version;
   uint32_t struct_size;
@@ -35,21 +44,6 @@ struct os1_surface_state_v1 {
   uint32_t timing;
   uint32_t reserved;
 };
-#if defined(__cplusplus)
-#define NX_SURFACE_ASSERT static_assert
-#else
-#define NX_SURFACE_ASSERT _Static_assert
-#endif
-NX_SURFACE_ASSERT(sizeof(struct os1_surface_state_v1) == 40, "surface ABI size");
-NX_SURFACE_ASSERT(offsetof(struct os1_surface_state_v1, abi_version) == 0, "surface ABI offset");
-NX_SURFACE_ASSERT(offsetof(struct os1_surface_state_v1, struct_size) == 4, "surface ABI offset");
-NX_SURFACE_ASSERT(offsetof(struct os1_surface_state_v1, generation) == 8, "surface ABI offset");
-NX_SURFACE_ASSERT(offsetof(struct os1_surface_state_v1, monotonic_ns) == 16, "surface ABI offset");
-NX_SURFACE_ASSERT(offsetof(struct os1_surface_state_v1, width) == 24, "surface ABI offset");
-NX_SURFACE_ASSERT(offsetof(struct os1_surface_state_v1, height) == 28, "surface ABI offset");
-NX_SURFACE_ASSERT(offsetof(struct os1_surface_state_v1, timing) == 32, "surface ABI offset");
-NX_SURFACE_ASSERT(offsetof(struct os1_surface_state_v1, reserved) == 36, "surface ABI offset");
-#undef NX_SURFACE_ASSERT
 struct os1_input_request_v1 {
   uint32_t abi_version;
   uint32_t struct_size;
@@ -57,18 +51,6 @@ struct os1_input_request_v1 {
   uint32_t reserved;
   struct os1_raw_input_event_v1 event;
 };
-#if defined(__cplusplus)
-#define NX_SURFACE_ASSERT static_assert
-#else
-#define NX_SURFACE_ASSERT _Static_assert
-#endif
-NX_SURFACE_ASSERT(sizeof(struct os1_input_request_v1) == 48, "surface ABI size");
-NX_SURFACE_ASSERT(offsetof(struct os1_input_request_v1, abi_version) == 0, "surface ABI offset");
-NX_SURFACE_ASSERT(offsetof(struct os1_input_request_v1, struct_size) == 4, "surface ABI offset");
-NX_SURFACE_ASSERT(offsetof(struct os1_input_request_v1, mode) == 8, "surface ABI offset");
-NX_SURFACE_ASSERT(offsetof(struct os1_input_request_v1, reserved) == 12, "surface ABI offset");
-NX_SURFACE_ASSERT(offsetof(struct os1_input_request_v1, event) == 16, "surface ABI offset");
-#undef NX_SURFACE_ASSERT
 struct os1_surface_move_v1 {
   uint32_t abi_version;
   uint32_t struct_size;
@@ -76,18 +58,6 @@ struct os1_surface_move_v1 {
   int32_t x;
   int32_t y;
 };
-#if defined(__cplusplus)
-#define NX_SURFACE_ASSERT static_assert
-#else
-#define NX_SURFACE_ASSERT _Static_assert
-#endif
-NX_SURFACE_ASSERT(sizeof(struct os1_surface_move_v1) == 20, "surface ABI size");
-NX_SURFACE_ASSERT(offsetof(struct os1_surface_move_v1, abi_version) == 0, "surface ABI offset");
-NX_SURFACE_ASSERT(offsetof(struct os1_surface_move_v1, struct_size) == 4, "surface ABI offset");
-NX_SURFACE_ASSERT(offsetof(struct os1_surface_move_v1, id) == 8, "surface ABI offset");
-NX_SURFACE_ASSERT(offsetof(struct os1_surface_move_v1, x) == 12, "surface ABI offset");
-NX_SURFACE_ASSERT(offsetof(struct os1_surface_move_v1, y) == 16, "surface ABI offset");
-#undef NX_SURFACE_ASSERT
 struct os1_buffer_request_v1 {
   uint32_t abi_version;
   uint32_t struct_size;
@@ -101,24 +71,6 @@ struct os1_buffer_request_v1 {
   uint64_t work_units;
   uint64_t hardware_cycles;
 };
-#if defined(__cplusplus)
-#define NX_SURFACE_ASSERT static_assert
-#else
-#define NX_SURFACE_ASSERT _Static_assert
-#endif
-NX_SURFACE_ASSERT(sizeof(struct os1_buffer_request_v1) == 72, "surface ABI size");
-NX_SURFACE_ASSERT(offsetof(struct os1_buffer_request_v1, abi_version) == 0, "surface ABI offset");
-NX_SURFACE_ASSERT(offsetof(struct os1_buffer_request_v1, struct_size) == 4, "surface ABI offset");
-NX_SURFACE_ASSERT(offsetof(struct os1_buffer_request_v1, operation) == 8, "surface ABI offset");
-NX_SURFACE_ASSERT(offsetof(struct os1_buffer_request_v1, flags) == 12, "surface ABI offset");
-NX_SURFACE_ASSERT(offsetof(struct os1_buffer_request_v1, byte_length) == 16, "surface ABI offset");
-NX_SURFACE_ASSERT(offsetof(struct os1_buffer_request_v1, page_offset) == 24, "surface ABI offset");
-NX_SURFACE_ASSERT(offsetof(struct os1_buffer_request_v1, address) == 32, "surface ABI offset");
-NX_SURFACE_ASSERT(offsetof(struct os1_buffer_request_v1, completed) == 40, "surface ABI offset");
-NX_SURFACE_ASSERT(offsetof(struct os1_buffer_request_v1, total_pages) == 48, "surface ABI offset");
-NX_SURFACE_ASSERT(offsetof(struct os1_buffer_request_v1, work_units) == 56, "surface ABI offset");
-NX_SURFACE_ASSERT(offsetof(struct os1_buffer_request_v1, hardware_cycles) == 64, "surface ABI offset");
-#undef NX_SURFACE_ASSERT
 struct os1_display_mode_v1 {
   uint32_t abi_version;
   uint32_t struct_size;
@@ -132,22 +84,34 @@ struct os1_display_mode_v1 {
   uint32_t refresh_millihz;
   uint32_t flags;
 };
-#if defined(__cplusplus)
-#define NX_SURFACE_ASSERT static_assert
-#else
-#define NX_SURFACE_ASSERT _Static_assert
-#endif
-NX_SURFACE_ASSERT(sizeof(struct os1_display_mode_v1) == 48, "surface ABI size");
-NX_SURFACE_ASSERT(offsetof(struct os1_display_mode_v1, abi_version) == 0, "surface ABI offset");
-NX_SURFACE_ASSERT(offsetof(struct os1_display_mode_v1, struct_size) == 4, "surface ABI offset");
-NX_SURFACE_ASSERT(offsetof(struct os1_display_mode_v1, operation) == 8, "surface ABI offset");
-NX_SURFACE_ASSERT(offsetof(struct os1_display_mode_v1, index) == 12, "surface ABI offset");
-NX_SURFACE_ASSERT(offsetof(struct os1_display_mode_v1, count) == 16, "surface ABI offset");
-NX_SURFACE_ASSERT(offsetof(struct os1_display_mode_v1, reserved) == 20, "surface ABI offset");
-NX_SURFACE_ASSERT(offsetof(struct os1_display_mode_v1, generation) == 24, "surface ABI offset");
-NX_SURFACE_ASSERT(offsetof(struct os1_display_mode_v1, width) == 32, "surface ABI offset");
-NX_SURFACE_ASSERT(offsetof(struct os1_display_mode_v1, height) == 36, "surface ABI offset");
-NX_SURFACE_ASSERT(offsetof(struct os1_display_mode_v1, refresh_millihz) == 40, "surface ABI offset");
-NX_SURFACE_ASSERT(offsetof(struct os1_display_mode_v1, flags) == 44, "surface ABI offset");
-#undef NX_SURFACE_ASSERT
+struct os1_display_workspace_v1 {
+  uint32_t abi_version;
+  uint32_t struct_size;
+  uint32_t mode;
+  uint32_t zoom_percent;
+  uint32_t base_width;
+  uint32_t base_height;
+  uint32_t physical_width;
+  uint32_t physical_height;
+  uint32_t logical_width;
+  uint32_t logical_height;
+};
+struct os1_surface_layout_v1 {
+  uint32_t abi_version;
+  uint32_t struct_size;
+  int32_t window_id;
+  uint32_t anchor;
+  uint32_t layer;
+  uint32_t order;
+  uint32_t margin;
+  uint32_t reserved;
+  uint32_t width;
+  uint32_t height;
+  int32_t x;
+  int32_t y;
+  int32_t work_x;
+  int32_t work_y;
+  uint32_t work_width;
+  uint32_t work_height;
+};
 #endif

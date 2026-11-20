@@ -48,6 +48,7 @@ static long surface_read(void *state, void *user, size_t size) {
   if (size != sizeof(info)) return -EINVAL;
   if (gpu_get_display_info(&width, &height) != 0 || width <= 0 || height <= 0)
     return -ENODEV;
+  compositor_resize(width, height);
   info.abi_version = OS1_SURFACE_ABI_VERSION;
   info.struct_size = sizeof(info);
   info.generation = __atomic_load_n(&surface_generation, __ATOMIC_ACQUIRE);
@@ -122,6 +123,10 @@ static long display_mode_write(void *state, const void *user, size_t size) {
   int changed = gpu_set_mode_index(request.index, request.generation);
   if (changed != 0) return changed;
   compositor_resize((int)mode.width, (int)mode.height);
+  /* Physical scanout and compositor workspace are independent contracts.
+   * The provider publishes the new hardware facts; ring-3 compositor policy
+   * decides whether/how its logical workspace changes. */
+  nx_surface_changed();
   return 0;
 }
 
@@ -175,6 +180,28 @@ static void display_release(void *state) {
 
 static const struct nx_resource_ops surface_ops = {
     .read = surface_read, .write = surface_signal, .wait = surface_wait};
+static long workspace_read(void *state, void *user, size_t size) {
+  (void)state;
+  if (size != sizeof(struct os1_display_workspace_v1)) return -EINVAL;
+  struct os1_display_workspace_v1 snapshot;
+  int got = compositor_workspace_query(&snapshot);
+  if (got != 0) return got;
+  return hal_copy_to_user(user, &snapshot, sizeof(snapshot)) == 0
+             ? (long)sizeof(snapshot) : -EFAULT;
+}
+
+static long workspace_write(void *state, const void *user, size_t size) {
+  (void)state;
+  if (size != sizeof(struct os1_display_workspace_v1)) return -EINVAL;
+  if (!proc_is_privileged(current_process)) return -EPERM;
+  struct os1_display_workspace_v1 request;
+  if (hal_copy_from_user(&request, user, sizeof(request))) return -EFAULT;
+  int result = compositor_workspace_set(&request);
+  return result == 0 ? (long)sizeof(request) : result;
+}
+
+static const struct nx_resource_ops workspace_ops = {
+    .read = workspace_read, .write = workspace_write};
 static const struct nx_resource_ops display_mode_ops = {
     .read = display_mode_read, .write = display_mode_write};
 static const struct nx_resource_ops display_ops = {
@@ -182,30 +209,56 @@ static const struct nx_resource_ops display_ops = {
 
 int nx_resource_acquire(struct process *caller, const char *path,
                         uint32_t rights, struct kobject *object) {
+  if (strcmp(path, OS1_RESOURCE_NULL) == 0)
+    return nx_null_resource_acquire(path, rights, object);
   if (strcmp(path, OS1_NXPAX_RESOURCE) == 0)
     return nx_nxpax_resource_acquire(caller, rights, object);
   if (caller && strcmp(path, OS1_RESOURCE_BUFFER) == 0)
     return nx_buffer_resource_acquire(rights, object);
+  /* RAW input belongs to nxkeyboardd/nxmoused, not to WINDOW apps.
+   * The input resource provider owns the authorization decision and the
+   * existing driver queues. Normal apps receive focused IPC_TYPE_INPUT. */
+  if (strcmp(path, OS1_RESOURCE_KEYBOARD) == 0 ||
+      strcmp(path, OS1_RESOURCE_POINTER) == 0)
+    return nx_input_resource_acquire(caller, path, rights, object);
   const uint32_t allowed = OS1_RIGHT_READ | OS1_RIGHT_WRITE | OS1_RIGHT_WAIT |
                           OS1_RIGHT_TRANSFER | OS1_RIGHT_DUPLICATE;
-  if (!caller || !proc_is_privileged(caller) ||
-      !proc_has_cap(caller, CAP_WINDOW) || (rights & ~allowed)) return -EPERM;
-  if (strcmp(path, OS1_RESOURCE_SURFACE_EVENTS) == 0) {
-    object->resource_ops = &surface_ops;
-    return 0;
-  }
+  if (!caller || !proc_has_cap(caller, CAP_WINDOW) ||
+      (rights & ~allowed)) return -EPERM;
+  /* Display facts are public to window-capable apps, but the mutation of
+   * physical scanout remains an explicitly privileged operation.  This is
+   * the same capability object namespace, not a separate graphics API. */
   if (strcmp(path, OS1_RESOURCE_DISPLAY_MODES) == 0) {
     if ((rights & OS1_RIGHT_WAIT) ||
         !(rights & (OS1_RIGHT_READ | OS1_RIGHT_WRITE)))
       return -EINVAL;
+    if (!proc_is_privileged(caller) && rights != OS1_RIGHT_READ)
+      return -EPERM;
     object->resource_ops = &display_mode_ops;
     return 0;
   }
-  if (strcmp(path, OS1_RESOURCE_DISPLAY) != 0) {
-    int result = nx_input_resource_acquire(path, rights, object);
-    if (result != -ENOENT) return result;
+  if (strcmp(path, OS1_RESOURCE_DISPLAY_WORKSPACE) == 0) {
+    if ((rights & OS1_RIGHT_WAIT) ||
+        !(rights & (OS1_RIGHT_READ | OS1_RIGHT_WRITE))) return -EINVAL;
+    if (!proc_is_privileged(caller) && rights != OS1_RIGHT_READ)
+      return -EPERM;
+    object->resource_ops = &workspace_ops;
+    return 0;
+  }
+  /* Public WINDOW metadata is read-only; window_read validates that a
+   * nonprivileged caller never supplies a destination for surface pixels. */
+  if (!proc_is_privileged(caller)) {
+    if ((strcmp(path, OS1_RESOURCE_WINDOW_STORAGE) != 0 &&
+         strcmp(path, OS1_RESOURCE_SURFACE_LAYOUT) != 0) ||
+        rights != OS1_RIGHT_READ) return -EPERM;
     return nx_window_resource_acquire(path, rights, object);
   }
+  if (strcmp(path, OS1_RESOURCE_SURFACE_EVENTS) == 0) {
+    object->resource_ops = &surface_ops;
+    return 0;
+  }
+  if (strcmp(path, OS1_RESOURCE_DISPLAY) != 0)
+    return nx_window_resource_acquire(path, rights, object);
   if (rights & OS1_RIGHT_WAIT) return -EINVAL;
   struct display_staging *staging = kmalloc(sizeof(*staging));
   if (!staging) return -ENOMEM;

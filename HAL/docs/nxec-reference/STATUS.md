@@ -5,7 +5,7 @@
 
 ## 1. Repository and source integrity
 
-- Project root: /Users/shsh/Documents/github/nxec.
+- Project root: $NXEC_REFERENCE_ROOT.
 - GRUB source is a Git submodule at boot/grub/upstream.
 - The nxec GitHub mirror is https://github.com/olmox001/grub-nxec.git.
 - Original GRUB upstream is retained as a separate remote: https://gitlab.freedesktop.org/gnu-grub/grub.git.

@@ -132,11 +132,9 @@ int process_install_stdio(struct process *p,
  */
 int process_redirect_child_fd(struct process *child, int child_slot,
                               int parent_fd) NX_MUST_USE;
-/* process_redirect_child_fd_from - same, with the SOURCE process explicit.  The
- * spawner and the fd owner are the same process today, but diverge once an
- * execution service spawns on a client's behalf (Q2): the fds are the CLIENT's.
- * Parameterising the source keeps that a caller change, not a rewrite. */
-int process_redirect_child_fd_from(struct process *owner, struct process *child,
+/* The service supplies a client PID. Lookup and installation share the
+ * scheduler's process lifetime protection. */
+int process_redirect_child_fd_from(int owner_pid, struct process *child,
                                    int child_slot, int parent_fd) NX_MUST_USE;
 
 /* sys_pipe - SYS_PIPE: create an anonymous OBJ_TYPE_PIPE and install its read +

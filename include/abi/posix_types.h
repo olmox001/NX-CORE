@@ -116,6 +116,7 @@ typedef struct {
 #define EOVERFLOW 75
 #define ENODATA 61
 #define ENOBUFS 105 /* No buffer space available (IPC queue full) */
+#define ETIMEDOUT 110 /* Timed out waiting for a kernel-backed event */
 
 /* Success */
 #define EOK 0
@@ -201,6 +202,8 @@ static inline const char *os1_strerror(int err) {
     return "Numerical result out of range";
   case ENOSYS:
     return "Function not implemented";
+  case ENOTSUP:
+    return "Operation not supported";
   case ENOTEMPTY:
     return "Directory not empty";
   default:
@@ -310,6 +313,17 @@ struct os1_spawn_request_v1 {
   uint32_t abi_version, struct_size;
   uint32_t argc, flags, nredir, reserved;
   uint64_t path, argv, redirections;
+};
+
+/* Version 2 adds an explicit child capability ceiling to the existing
+ * PROCESS object operation. Version 1 remains accepted unchanged for
+ * execsvc clients that already use owner-scoped argument passing.
+ * The object handle, not an untrusted PID, names the logical owner. */
+#define OS1_SPAWN_REQUEST_AUTH_VERSION 2U
+struct os1_spawn_request_v2 {
+  struct os1_spawn_request_v1 base;
+  uint32_t level;
+  uint32_t caps;
 };
 
 #define OS1_PORT_PACKET_VERSION 1U

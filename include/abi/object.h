@@ -116,6 +116,22 @@
  * becomes runnable. DESTROY plus privileged CAP_SPAWN required; arg points to
  * a bounded versioned os1_spawn_request_v1. No suspended intermediate child. */
 #define OBJ_CTL_SPAWN_OWNED 18
+/* PIPE: bounded, lock-consistent readiness snapshot; QUERY requires a held
+ * READ or WRITE handle. Readiness is observed, not consumed. Never use a
+ * fake-success poll provider to infer pipe EOF (ASTRA object semantics). */
+#define OBJ_CTL_PIPE_STATUS 19
+/* Duplicate this process's SOURCE capability to an exact descriptor,
+ * atomically replacing the old target object if present. Source requires
+ * DUPLICATE. Object authority and rights never increase. */
+#define OBJ_CTL_DUP_TO 20
+/* Allocate the first available descriptor >= arg, preserving source rights.
+ * Unlike exact duplication, does not close/replace any existing target. */
+#define OBJ_CTL_DUP_MIN 21
+#define OS1_PIPE_STATUS_VERSION 1U
+struct os1_pipe_status_v1 {
+  unsigned int abi_version, struct_size;
+  unsigned int available, capacity, readers, writers;
+};
 /* WINDOW: all geometry is capability-driven, not a new syscall.
  * arg packs unsigned width/height or signed x/y into two 32-bit words. */
 #define OBJ_CTL_WINDOW_RESIZE 15 /* WRITE: owner adopts new logical pixels */
@@ -137,6 +153,9 @@
                        * a client reaches a SERVICE BY NAME instead of by pid. */
 #define OS1_NS_TIME 6 /* path "system" → privileged read-only OBJ_TYPE_TIMER */
 #define OS1_NS_RESOURCE 7 /* provider resource name; authority is the handle */
+/* Null is a zero-state resource: EOF on read, sink on write. This string is
+ * an object provider path, not a VFS-owned regular-file path. */
+#define OS1_RESOURCE_NULL "device/null"
 
 /* Registry object bounds are part of the object namespace contract. Kernel,
  * providers and userland clients use one source of truth. */

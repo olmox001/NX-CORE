@@ -162,10 +162,29 @@ mkdir -p "$CACHE"
 if [[ ! -d "$GNULIB_CACHE/.git" ]] || \
    [[ "$(git -C "$GNULIB_CACHE" rev-parse HEAD 2>/dev/null || true)" != "$GNULIB_REVISION" ]]; then
     rm -rf "$GNULIB_CACHE"
-    git init "$GNULIB_CACHE"
-    git -C "$GNULIB_CACHE" remote add origin https://git.savannah.gnu.org/git/gnulib.git
-    git -C "$GNULIB_CACHE" fetch --depth 1 origin "$GNULIB_REVISION"
-    git -C "$GNULIB_CACHE" checkout --detach FETCH_HEAD
+    # Reuse the exact pinned commit already present in the umbrella's GNU
+    # submodule, without relying on network availability for local builds.
+    GNULIB_LOCAL="$ROOT/../user/LIBEXTERNAL/gnulib"
+    if [[ -d "$GNULIB_LOCAL/.git" || -f "$GNULIB_LOCAL/.git" ]] && \
+       git -C "$GNULIB_LOCAL" cat-file -e "$GNULIB_REVISION^{commit}" 2>/dev/null; then
+        echo "[$LOG_PREFIX] reusing locally available pinned Gnulib commit"
+        git init --quiet "$GNULIB_CACHE"
+        git -C "$GNULIB_CACHE" fetch --no-tags "$GNULIB_LOCAL" "$GNULIB_REVISION"
+        git -C "$GNULIB_CACHE" checkout --quiet --detach FETCH_HEAD
+    else
+        git init --quiet "$GNULIB_CACHE"
+        if ! git -C "$GNULIB_CACHE" fetch --depth 1 \
+             https://git.savannah.gnu.org/git/gnulib.git "$GNULIB_REVISION"; then
+            echo "[$LOG_PREFIX] Savannah unavailable; trying GNU GitHub mirror"
+            git -C "$GNULIB_CACHE" fetch --depth 1 \
+                https://github.com/coreutils/gnulib.git "$GNULIB_REVISION"
+        fi
+        git -C "$GNULIB_CACHE" checkout --quiet --detach FETCH_HEAD
+    fi
+    [[ "$(git -C "$GNULIB_CACHE" rev-parse HEAD)" == "$GNULIB_REVISION" ]] || {
+        echo "[$LOG_PREFIX] Gnulib checkout does not match pinned revision" >&2
+        exit 1
+    }
 fi
 
 SOURCE_REBUILT=0
