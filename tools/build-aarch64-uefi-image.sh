@@ -80,15 +80,15 @@ EFI_CFLAGS=(
     -ffreestanding -fno-stack-protector -fno-builtin -fno-exceptions
     -fno-unwind-tables -fno-asynchronous-unwind-tables -mgeneral-regs-only
     -O2 -Wall -Wextra -Werror
-    -I"$ROOT/HAL" -I"$ROOT/HAL/arch/aarch64/include"
+    -I"$ROOT/HAL" -I"$ROOT/HAL/host/arch/aarch64/include"
     -I"$ROOT/HAL/include" -I"$ROOT/include"
 )
 
-"$HOST_CLANG" "${EFI_CFLAGS[@]}" -std=c11     -c "$ROOT/HAL/arch/aarch64/boot/uefi/efi_stub.c"     -o "$BUILD/efi_stub.obj"
-"$HOST_CLANG" "${EFI_CFLAGS[@]}" -std=c11     -c "$ROOT/HAL/arch/aarch64/boot/uefi/efi_exit_adapter.c"     -o "$BUILD/efi_exit_adapter.obj"
+"$HOST_CLANG" "${EFI_CFLAGS[@]}" -std=c11     -c "$ROOT/HAL/host/arch/aarch64/boot/uefi/efi_stub.c"     -o "$BUILD/efi_stub.obj"
+"$HOST_CLANG" "${EFI_CFLAGS[@]}" -std=c11     -c "$ROOT/HAL/host/arch/aarch64/boot/uefi/efi_exit_adapter.c"     -o "$BUILD/efi_exit_adapter.obj"
 "$HOST_CLANG" "${EFI_CFLAGS[@]}" -std=c11     -c "$ROOT/HAL/capability/uefi_exit.c"     -o "$BUILD/uefi_exit.obj"
 "$HOST_CLANG" "${EFI_CFLAGS[@]}" -std=c11     -c "$ROOT/HAL/capability/uefi_memory_map.c"     -o "$BUILD/uefi_memory_map.obj"
-"$HOST_CLANG" --target=aarch64-pc-windows-msvc -ffreestanding     -fno-stack-protector -fno-unwind-tables -fno-asynchronous-unwind-tables     -c "$ROOT/HAL/arch/aarch64/boot/uefi/efi_handoff.S"     -o "$BUILD/efi_handoff.obj"
+"$HOST_CLANG" --target=aarch64-pc-windows-msvc -ffreestanding     -fno-stack-protector -fno-unwind-tables -fno-asynchronous-unwind-tables     -c "$ROOT/HAL/host/arch/aarch64/boot/uefi/efi_handoff.S"     -o "$BUILD/efi_handoff.obj"
 
 KERNEL_ABS="$(cd "$(dirname "$KERNEL")" && pwd)/$(basename "$KERNEL")"
 DTB_ABS="$(cd "$(dirname "$DTB")" && pwd)/$(basename "$DTB")"
@@ -118,7 +118,7 @@ while IFS='|' read -r project_id title image marker; do
         -DNEXS_EFI_KERNEL_IMAGE="\"$KERNEL_ABS\"" \
         -DNEXS_EFI_DTB_IMAGE="\"$DTB_ABS\"" \
         -DNEXS_EFI_ROOTFS_IMAGE="\"$ROOTFS_ABS\"" \
-        -c "$ROOT/HAL/arch/aarch64/boot/uefi/efi_payload.S" \
+        -c "$ROOT/HAL/host/arch/aarch64/boot/uefi/efi_payload.S" \
         -o "$PAYLOAD_OBJ"
     "$LLD_LINK" /subsystem:efi_application /entry:efi_main /nodefaultlib         /machine:arm64 /out:"$EFI_LOADER"         "$BUILD/efi_stub.obj" "$BUILD/efi_exit_adapter.obj"         "$BUILD/uefi_exit.obj" "$BUILD/uefi_memory_map.obj"         "$BUILD/efi_handoff.obj" "$PAYLOAD_OBJ"
     cp "$EFI_LOADER" "$LOADER_STAGE/$project_id.efi"

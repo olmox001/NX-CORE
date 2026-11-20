@@ -7,7 +7,7 @@ platform discovery belong here.
 
 Current verified migration boundary:
 
-- HAL/arch/{amd64,aarch64} owns the former kernel/arch trees.
+- HAL/host/arch/{amd64,aarch64} owns the former kernel/arch trees.
 - Architecture-only UART/IRQ/timer providers live beside their providers.
 - sources.mk is the single HAL source manifest.
 - make -C HAL ARCH=amd64|aarch64 builds HAL/build/<arch>/libnxhal.a.

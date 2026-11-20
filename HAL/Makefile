@@ -46,7 +46,7 @@ NX_WARNINGS_AS_ERRORS ?= 1
 ifeq ($(NX_WARNINGS_AS_ERRORS),1)
 COMMON_FLAGS += -Werror -Wa,--fatal-warnings
 endif
-HAL_INCLUDE := -I$(HAL_ROOT) -I$(HAL_ROOT)/include -I$(KERNEL_ROOT)/include -I$(HAL_ROOT)/arch/$(ARCH)/include \
+HAL_INCLUDE := -I$(HAL_ROOT) -I$(HAL_ROOT)/include -I$(KERNEL_ROOT)/include -I$(HAL_ROOT)/host/arch/$(ARCH)/include \
   -I$(KERNEL_ROOT)/include/abi -I$(KERNEL_ROOT)/include/api
 HAL_CFLAGS := $(COMMON_FLAGS) $(ARCH_CFLAGS) $(HAL_INCLUDE) \
   -Wundef -Wformat=2 -Wcast-align -Wpointer-arith -Wswitch-enum \

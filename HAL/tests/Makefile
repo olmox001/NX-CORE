@@ -86,11 +86,11 @@ test-host: | $(BUILD)
 	$(BUILD)/base_contract_test
 	@set -eu; for isa in amd64 aarch64; do \
 	  $(CC) $(CFLAGS) -I$(ROOT)/include -I$(ROOT)/../include -I$(ROOT)/../include/abi -I$(ROOT)/../include/api \
-	    -I$(ROOT)/arch/$$isa/include $(ROOT)/arch/$$isa/cpu/frame.c \
+	    -I$(ROOT)/host/arch/$$isa/include $(ROOT)/host/arch/$$isa/cpu/frame.c \
 	    $(UNIT)/frame_$${isa}_test.c -o $(BUILD)/frame_$${isa}_test; \
 	  $(BUILD)/frame_$${isa}_test; \
 	done
-	$(CC) $(CFLAGS) -I$(ROOT)/include $(ROOT)/arch/aarch64/cpu/ioport.c \
+	$(CC) $(CFLAGS) -I$(ROOT)/include $(ROOT)/host/arch/aarch64/cpu/ioport.c \
 	  $(UNIT)/ioport_aarch64_test.c -o $(BUILD)/ioport_aarch64_test
 	$(BUILD)/ioport_aarch64_test
 	$(CC) $(CFLAGS) -I$(ROOT)/include $(ROOT)/core/resource.c $(ROOT)/base/checked.c $(ROOT)/base/types.c $(UNIT)/resource_mutation_test.c -o $(BUILD)/resource_mutation_test
@@ -115,8 +115,8 @@ test-cross: | $(BUILD)
 	    objects="$$objects $$object"; \
 	  done; \
 	  case "$$target" in \
-	    x86_64-elf) adapter=$(ROOT)/capability/amd64/isa.c; adapter_include=$(ROOT)/arch/amd64/include; linker=x86_64-elf-ld ;; \
-	    aarch64-none-elf) adapter=$(ROOT)/capability/arm64/isa.c; adapter_include=$(ROOT)/arch/aarch64/include; linker=aarch64-none-elf-ld ;; \
+	    x86_64-elf) adapter=$(ROOT)/capability/amd64/isa.c; adapter_include=$(ROOT)/host/arch/amd64/include; linker=x86_64-elf-ld ;; \
+	    aarch64-none-elf) adapter=$(ROOT)/capability/arm64/isa.c; adapter_include=$(ROOT)/host/arch/aarch64/include; linker=aarch64-none-elf-ld ;; \
 	  esac; \
 	  adapter_object="$(BUILD)/isa-adapter-$$target.o"; \
 	  $(CC) $(CROSS_CFLAGS) -target "$$target" -I$(ROOT) -I"$$adapter_include" -c "$$adapter" -o "$$adapter_object"; \
@@ -155,8 +155,8 @@ test-cross: | $(BUILD)
 
 	$(CC) $(CROSS_CFLAGS) -target x86_64-elf -DARCH_AMD64 -DKERNEL \
 	  -I$(ROOT)/include -I$(ROOT)/../include -I$(ROOT)/../include/abi \
-	  -I$(ROOT)/../include/api -I$(ROOT)/arch/amd64/include \
-	  -c $(ROOT)/arch/amd64/cpu/ioport.c -o $(BUILD)/ioport-amd64.o
+	  -I$(ROOT)/../include/api -I$(ROOT)/host/arch/amd64/include \
+	  -c $(ROOT)/host/arch/amd64/cpu/ioport.c -o $(BUILD)/ioport-amd64.o
 	$(CC) $(CROSS_CFLAGS) -target x86_64-elf -DARCH_AMD64 -DKERNEL \
 	  -I$(ROOT)/include -c $(UNIT)/ioport_amd64_test.c \
 	  -o $(BUILD)/ioport-amd64-test.o
@@ -252,13 +252,13 @@ test-sanitize: | $(BUILD)
 	  $(CC) -std=c17 -O1 -g -fsanitize=address,undefined \
 	    -fno-omit-frame-pointer -Wall -Wextra -Werror -Wpedantic \
 	    -I$(ROOT)/include -I$(ROOT)/../include -I$(ROOT)/../include/abi -I$(ROOT)/../include/api \
-	    -I$(ROOT)/arch/$$isa/include $(ROOT)/arch/$$isa/cpu/frame.c \
+	    -I$(ROOT)/host/arch/$$isa/include $(ROOT)/host/arch/$$isa/cpu/frame.c \
 	    $(UNIT)/frame_$${isa}_test.c -o $(BUILD)/frame_$${isa}_test-sanitize; \
 	  $(BUILD)/frame_$${isa}_test-sanitize; \
 	done
 	$(CC) -std=c17 -O1 -g -fsanitize=address,undefined \
 	  -fno-omit-frame-pointer -Wall -Wextra -Werror -Wpedantic \
-	  -I$(ROOT)/include $(ROOT)/arch/aarch64/cpu/ioport.c \
+	  -I$(ROOT)/include $(ROOT)/host/arch/aarch64/cpu/ioport.c \
 	  $(UNIT)/ioport_aarch64_test.c -o $(BUILD)/ioport_aarch64_test-sanitize
 	$(BUILD)/ioport_aarch64_test-sanitize
 	$(CC) -std=c17 -O1 -g -fsanitize=address,undefined -fno-omit-frame-pointer \
@@ -284,31 +284,31 @@ test-static:
 	  --warnings-as-errors='*' -- $(CROSS_CFLAGS) -I$(ROOT) -I$(ROOT)/include
 	$(CLANG_TIDY) $(ROOT)/capability/amd64/isa.c --extra-arg=--target=x86_64-elf \
 	  --checks='clang-analyzer-*,bugprone-*,cert-*,misc-*,performance-*,portability-*,-bugprone-easily-swappable-parameters,-portability-no-assembler' \
-	  --warnings-as-errors='*' -- $(CROSS_CFLAGS) -I$(ROOT) -I$(ROOT)/arch/amd64/include
+	  --warnings-as-errors='*' -- $(CROSS_CFLAGS) -I$(ROOT) -I$(ROOT)/host/arch/amd64/include
 	$(CLANG_TIDY) $(ROOT)/capability/arm64/isa.c --extra-arg=--target=aarch64-none-elf \
 	  --checks='clang-analyzer-*,bugprone-*,cert-*,misc-*,performance-*,portability-*,-bugprone-easily-swappable-parameters,-portability-no-assembler' \
-	  --warnings-as-errors='*' -- $(CROSS_CFLAGS) -I$(ROOT) -I$(ROOT)/arch/aarch64/include
-	$(CLANG_TIDY) $(ROOT)/arch/amd64/cpu/ioport.c --extra-arg=--target=x86_64-elf \
+	  --warnings-as-errors='*' -- $(CROSS_CFLAGS) -I$(ROOT) -I$(ROOT)/host/arch/aarch64/include
+	$(CLANG_TIDY) $(ROOT)/host/arch/amd64/cpu/ioport.c --extra-arg=--target=x86_64-elf \
 	  --checks='clang-analyzer-*,bugprone-*,cert-*,misc-*,performance-*,portability-*,-bugprone-easily-swappable-parameters,-portability-no-assembler' \
 	  --warnings-as-errors='*' -- $(CROSS_CFLAGS) -DARCH_AMD64 -DKERNEL \
-	  -I$(ROOT)/include -I$(ROOT)/arch/amd64/include \
+	  -I$(ROOT)/include -I$(ROOT)/host/arch/amd64/include \
 	  -I$(ROOT)/../include -I$(ROOT)/../include/abi -I$(ROOT)/../include/api
-	$(CLANG_TIDY) $(ROOT)/arch/aarch64/cpu/ioport.c --extra-arg=--target=aarch64-none-elf \
+	$(CLANG_TIDY) $(ROOT)/host/arch/aarch64/cpu/ioport.c --extra-arg=--target=aarch64-none-elf \
 	  --checks='clang-analyzer-*,bugprone-*,cert-*,misc-*,performance-*,portability-*,-bugprone-easily-swappable-parameters' \
 	  --warnings-as-errors='*' -- $(CROSS_CFLAGS) -DARCH_AARCH64 -DKERNEL \
-	  -I$(ROOT)/include -I$(ROOT)/arch/aarch64/include \
+	  -I$(ROOT)/include -I$(ROOT)/host/arch/aarch64/include \
 	  -I$(ROOT)/../include -I$(ROOT)/../include/abi -I$(ROOT)/../include/api
 	$(CPPCHECK) --enable=warning,performance,portability --error-exitcode=1 --std=c17 \
-	  -I$(ROOT)/include -I$(ROOT)/arch/amd64/include $(ROOT)/arch/amd64/cpu/ioport.c
+	  -I$(ROOT)/include -I$(ROOT)/host/arch/amd64/include $(ROOT)/host/arch/amd64/cpu/ioport.c
 	$(CPPCHECK) --enable=warning,performance,portability --error-exitcode=1 --std=c17 \
-	  -I$(ROOT)/include $(ROOT)/arch/aarch64/cpu/ioport.c
+	  -I$(ROOT)/include $(ROOT)/host/arch/aarch64/cpu/ioport.c
 	$(CPPCHECK) --enable=warning,performance,portability --error-exitcode=1 --std=c17 \
 	  -I$(ROOT) -I$(ROOT)/include $(COMMON) $(CAPABILITY) $(ROOT)/core/fault_protocol.c $(ROOT)/core/diagnostic_protocol.c $(ROOT)/core/timer_protocol.c $(ROOT)/core/smp_protocol.c $(ROOT)/core/device_protocol.c $(ROOT)/core/irq.c $(ROOT)/core/fatal_protocol.c $(ROOT)/core/memory_protocol.c $(ROOT)/core/time.c $(ROOT)/core/entropy.c $(ROOT)/base/checked.c $(ROOT)/base/types.c $(ROOT)/base/result.c $(ROOT)/base/status.c $(ROOT)/core/resource.c $(ROOT)/core/pci.c $(ROOT)/core/device_name.c \
 	  $(UNIT)/*.c
 	$(CPPCHECK) --enable=warning,performance,portability --error-exitcode=1 --std=c17 \
-	  -I$(ROOT) -I$(ROOT)/arch/amd64/include $(ROOT)/capability/amd64/isa.c
+	  -I$(ROOT) -I$(ROOT)/host/arch/amd64/include $(ROOT)/capability/amd64/isa.c
 	$(CPPCHECK) --enable=warning,performance,portability --error-exitcode=1 --std=c17 \
-	  -I$(ROOT) -I$(ROOT)/arch/aarch64/include $(ROOT)/capability/arm64/isa.c
+	  -I$(ROOT) -I$(ROOT)/host/arch/aarch64/include $(ROOT)/capability/arm64/isa.c
 
 clean:
 	rm -rf $(BUILD)

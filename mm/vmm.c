@@ -38,7 +38,7 @@
  *   MM-VMM-05  RESOLVED (Phase B2): unmap paths now satisfy the cross-CPU
  *                                 shootdown contract — AArch64 in hardware
  *                                 (broadcast IS TLBI), amd64 via LAPIC IPI
- *                                 (kernel/HAL/arch/amd64/mm/tlb.c); teardown
+ *                                 (kernel/HAL/host/arch/amd64/mm/tlb.c); teardown
  *                                 broadcasts one full shootdown before
  *                                 frames are recycled.
  *   MM-VMM-06  (W2 REFINE)       Generic map path is 4KB-only; 2MB blocks

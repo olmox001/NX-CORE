@@ -30,13 +30,13 @@ ifeq ($(findstring amd64,$(ARCH)),amd64)
   override ARCH := amd64
   CROSS_COMPILE ?= $(AMD64_CROSS_COMPILE)
   ARCH_CFLAGS := -DARCH_AMD64 -mno-red-zone -mno-mmx -mno-sse -mno-sse2 -mcmodel=large
-  HAL_ARCH_DIR := HAL/arch/amd64
+  HAL_ARCH_DIR := HAL/host/arch/amd64
   QEMU := qemu-system-x86_64
 else ifeq ($(findstring aarch64,$(ARCH)),aarch64)
   override ARCH := aarch64
   CROSS_COMPILE ?= $(AARCH64_CROSS_COMPILE)
   ARCH_CFLAGS := -DARCH_AARCH64 -mcpu=cortex-a57
-  HAL_ARCH_DIR := HAL/arch/aarch64
+  HAL_ARCH_DIR := HAL/host/arch/aarch64
   QEMU := qemu-system-aarch64
 else
   $(error ARCH must be amd64 or aarch64)

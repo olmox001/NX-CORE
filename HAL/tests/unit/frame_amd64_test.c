@@ -1,4 +1,4 @@
-#include "../../arch/amd64/include/arch/pt_regs.h"
+#include "../../host/arch/amd64/include/arch/pt_regs.h"
 #include <hal/frame.h>
 #include <stdint.h>
 #include <string.h>

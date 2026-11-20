@@ -1,6 +1,6 @@
 # NX-HAL migration state
 
-- Existing kernel/arch ownership moved under kernel/HAL/arch.
+- Existing kernel/arch ownership moved under kernel/HAL/host/arch.
 - NX-CORE links architecture providers through libnxhal.a.
 - Core ISA primitives are real hal_* symbols; generic code no longer includes
   arch/arch.h.
@@ -196,7 +196,7 @@ Blocking architectural debt still present:
    never Core globals/functions.
 
 5. **NX-CORE build is not independent of HAL/provider selection.**
-   `kernel/Makefile` still selects `HAL/arch/<isa>`, passes `-DARCH_*`,
+   `kernel/Makefile` still selects `HAL/host/arch/<isa>`, passes `-DARCH_*`,
    exposes the private provider include directory and consumes the provider
    linker script directly.  A future standalone NX-CORE repository must
    compile against only a neutral HAL SDK/contract; provider selection and
@@ -323,7 +323,7 @@ or full Power12 qualified until separate acceptance evidence exists.
 ## 2026-11-10 — verified ISA-native frame provider migration
 
 Generic HAL/core/frame.c is retired. The provider-specific frame
-implementation now belongs to HAL/arch/<ISA>/cpu/frame.c, while the
+implementation now belongs to HAL/host/arch/<ISA>/cpu/frame.c, while the
 existing public hal/frame.h contract remains invariant. Both kernels and
 GRUB images compile; both HAL host and ASan/UBSan suites, ABI contracts
 and changed Power12 gate pass. NXADB amd64 ISO BIOS passed 30/30 kernel

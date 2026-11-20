@@ -1,7 +1,7 @@
 # NX-HAL canonical architecture/provider source manifest.
 # Consumed by both kernel/build.mk and HAL/Makefile.
 HAL_ROOT ?= HAL
-HAL_ARCH_DIR := $(HAL_ROOT)/arch/$(ARCH)
+HAL_ARCH_DIR := $(HAL_ROOT)/host/arch/$(ARCH)
 
 ifeq ($(ARCH),amd64)
 HAL_BOOT_SOURCES := \
